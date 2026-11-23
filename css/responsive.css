@@ -1,0 +1,169 @@
+/* ==========================================================================
+   LifeOS — Адаптивные стили (responsive.css)
+   Поддержка экранов ПК (от 1366×768), планшетов и мобильных смартфонов
+   ========================================================================== */
+
+/* Планшеты и компактные ноутбуки (<= 1024px) */
+@media (max-width: 1024px) {
+  .header-container {
+    padding: 0.65rem 1rem;
+  }
+
+  .nav-item {
+    padding: 0.45rem 0.65rem;
+    font-size: 0.85rem;
+  }
+
+  .main-wrapper {
+    padding: 1rem;
+  }
+
+  .charts-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Смартфоны и мобильные устройства (<= 768px) */
+@media (max-width: 768px) {
+  body {
+    padding-bottom: 70px; /* Отступ для нижней мобильной панели */
+  }
+
+  /* Шапка на мобильных */
+  .app-header {
+    padding: 0.25rem 0;
+  }
+
+  .header-nav {
+    display: none; /* Скрываем верхнее меню, включаем нижний таббар */
+  }
+
+  .brand-text .brand-tagline {
+    display: none;
+  }
+
+  .clock-badge {
+    display: none;
+  }
+
+  /* Нижняя панель навигации (Bottom Navigation) */
+  .mobile-bottom-nav {
+    display: flex !important;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 60px;
+    background-color: var(--bg-card);
+    border-top: 1px solid var(--border-color);
+    z-index: 999;
+    box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.05);
+    padding-bottom: env(safe-area-inset-bottom, 0);
+  }
+
+  .mobile-nav-item {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    font-weight: 500;
+    gap: 3px;
+    cursor: pointer;
+    transition: var(--transition);
+  }
+
+  .mobile-nav-item.active {
+    color: var(--primary);
+    font-weight: 700;
+  }
+
+  .mobile-nav-item svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  /* Сетки и карточки на мобильных */
+  .metrics-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.65rem;
+  }
+
+  .metric-card {
+    padding: 0.85rem;
+  }
+
+  .metric-value {
+    font-size: 1.35rem;
+  }
+
+  .today-hero-card {
+    padding: 1.15rem;
+  }
+
+  .today-hero-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .today-hero-actions .btn {
+    flex: 1;
+  }
+
+  /* Формы и строки */
+  .form-row {
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .hw-card {
+    flex-direction: column;
+  }
+
+  .hw-check-col {
+    align-self: flex-start;
+  }
+
+  .hw-actions-col {
+    width: 100%;
+    justify-content: flex-end;
+    margin-top: 0.5rem;
+  }
+
+  .lesson-card {
+    flex-wrap: wrap;
+  }
+
+  .lesson-actions {
+    width: 100%;
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  .modal-card {
+    margin: 0.5rem;
+    padding: 1.15rem;
+    max-height: 95vh;
+  }
+
+  .topics-grid, .olympiads-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .footer-container {
+    flex-direction: column;
+    gap: 0.5rem;
+    text-align: center;
+  }
+}
+
+/* Для десктопов скрываем мобильную панель */
+@media (min-width: 769px) {
+  .mobile-bottom-nav {
+    display: none !important;
+  }
+}
