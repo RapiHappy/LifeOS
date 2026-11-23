@@ -1,26 +1,33 @@
 /**
  * LifeOS — Главный координатор приложения (app.js)
- * Управляет навигацией, экраном «Сегодня», статусами задач,
- * ИИ-ассистентом, живыми часами и Service Worker.
+ * v1.1: Полная интеграция с TimeUtils (Europe/Moscow),
+ * уведомление об очистке старых демо-данных, предупреждения о перегрузке,
+ * управление расписанием и PWA.
  */
 
 const App = {
   currentView: 'today',
-  selectedDate: null, // по умолчанию текущая дата 'YYYY-MM-DD'
+  selectedDate: null,
   clockTimer: null,
 
+  getTimeLib() {
+    return (typeof TimeUtils !== 'undefined') ? TimeUtils : (typeof globalThis !== 'undefined' && globalThis.TimeUtils ? globalThis.TimeUtils : null);
+  },
+
   async init() {
-    console.log('Инициализация LifeOS 1.0...');
-    
-    // Текущая дата
-    const now = new Date();
-    this.selectedDate = now.toISOString().split('T')[0];
+    console.log('Инициализация LifeOS v1.1...');
+    const timeLib = this.getTimeLib();
+
+    // Текущая дата в Московском часовом поясе
+    this.selectedDate = timeLib ? timeLib.getTodayStr() : new Date().toISOString().split('T')[0];
 
     // Инициализация базы данных
     await Database.init();
 
     // Инициализация менеджера уведомлений
-    NotificationsManager.init(Database);
+    if (typeof NotificationsManager !== 'undefined') {
+      NotificationsManager.init(Database);
+    }
 
     // Запуск живых часов
     this.startClock();
@@ -28,7 +35,7 @@ const App = {
     // Настройка навигации
     this.setupNavigation();
 
-    // Первичная генерация расписания на сегодня, если его ещё нет
+    // Проверка расписания на сегодня
     let todaySchedule = await Database.getDaySchedule(this.selectedDate);
     if (!todaySchedule || !todaySchedule.tasks || todaySchedule.tasks.length === 0) {
       await AIPlanner.autoReplan(this.selectedDate, Database, 'Первичная генерация расписания');
@@ -45,9 +52,13 @@ const App = {
     const updateTime = () => {
       const el = document.getElementById('header-live-clock');
       if (el) {
-        const now = new Date();
-        const timeStr = now.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        el.textContent = timeStr;
+        const timeLib = this.getTimeLib();
+        if (timeLib) {
+          const mDate = timeLib.getMoscowDate();
+          el.textContent = mDate.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        } else {
+          el.textContent = new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        }
       }
     };
     updateTime();
@@ -91,15 +102,15 @@ const App = {
   refreshCurrentView() {
     if (this.currentView === 'today') {
       this.renderTodayView();
-    } else if (this.currentView === 'school') {
+    } else if (this.currentView === 'school' && typeof SchoolManager !== 'undefined') {
       SchoolManager.init(Database);
-    } else if (this.currentView === 'homework') {
+    } else if (this.currentView === 'homework' && typeof HomeworkManager !== 'undefined') {
       HomeworkManager.init(Database);
-    } else if (this.currentView === 'goals') {
+    } else if (this.currentView === 'goals' && typeof GoalsManager !== 'undefined') {
       GoalsManager.init(Database);
-    } else if (this.currentView === 'statistics') {
+    } else if (this.currentView === 'statistics' && typeof StatisticsManager !== 'undefined') {
       StatisticsManager.init(Database);
-    } else if (this.currentView === 'settings') {
+    } else if (this.currentView === 'settings' && typeof SettingsManager !== 'undefined') {
       SettingsManager.init(Database);
     }
   },
@@ -111,57 +122,51 @@ const App = {
     const container = document.getElementById('today-content');
     if (!container) return;
 
+    const timeLib = this.getTimeLib();
     const schedule = await Database.getDaySchedule(this.selectedDate);
     const homework = await Database.getAllHomework();
     const settings = Database.getSettings();
-    const now = new Date();
+    const hasLegacyDemo = await Database.hasLegacyDemoData();
 
     const tasks = schedule ? (schedule.tasks || []) : [];
     const mode = schedule ? schedule.mode : (settings.activeMode || 'normal');
 
-    // Подсчет метрик дня
+    // Метрики дня
     const totalTasks = tasks.length;
     const completedTasks = tasks.filter(t => t.status === 'completed').length;
     const pendingTasks = tasks.filter(t => t.status === 'pending' || t.status === 'in_progress').length;
     const progressPercent = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
 
-    // Домашка на сегодня/завтра
+    // ДЗ
     const activeHw = homework.filter(h => h.status !== 'completed');
     let hwMinutes = 0;
-    activeHw.forEach(h => hwMinutes += (h.estimatedMinutes || 30));
+    activeHw.forEach(h => hwMinutes += (Number(h.estimatedMinutes) || 30));
 
-    // Ближайшее предстоящее событие
-    const currentMin = now.getHours() * 60 + now.getMinutes();
+    // Ближайшее событие
+    const currentMin = timeLib ? timeLib.getCurrentMinutesMoscow() : (new Date().getHours() * 60 + new Date().getMinutes());
     let nextEvent = null;
     let nextReminderTime = '—';
 
     for (const t of tasks) {
-      const [h, m] = (t.startTime || '00:00').split(':').map(Number);
-      const startMin = h * 60 + m;
+      const startMin = timeLib ? timeLib.timeToMin(t.startTime) : ((h, m) => h * 60 + m)(...(t.startTime || '00:00').split(':').map(Number));
       if (startMin >= currentMin && t.status !== 'completed' && t.status !== 'skipped') {
         nextEvent = t;
         const advance = Number(settings.notificationAdvance) || 10;
         const remMin = Math.max(0, startMin - advance);
-        nextReminderTime = Scheduler.minToTime(remMin);
+        nextReminderTime = timeLib ? timeLib.minToTime(remMin) : Scheduler.minToTime(remMin);
         break;
       }
     }
 
-    // Приветствие по времени суток
-    const hour = now.getHours();
+    // Приветствие
+    const mDate = timeLib ? timeLib.getMoscowDate() : new Date();
+    const hour = mDate.getHours();
     let greeting = 'Добрый день';
     if (hour >= 5 && hour < 12) greeting = 'Доброе утро';
     else if (hour >= 18 && hour < 23) greeting = 'Добрый вечер';
     else if (hour >= 23 || hour < 5) greeting = 'Доброй ночи';
 
-    // Форматирование даты
-    const dateFormatted = new Date(this.selectedDate + 'T12:00:00').toLocaleDateString('ru-RU', {
-      weekday: 'long',
-      day: 'numeric',
-      month: 'long',
-      year: 'numeric'
-    });
-    const capitalizedDate = dateFormatted.charAt(0).toUpperCase() + dateFormatted.slice(1);
+    const capitalizedDate = timeLib ? timeLib.formatDateRu(this.selectedDate) : this.selectedDate;
 
     const modeLabels = {
       normal: 'Обычный режим',
@@ -174,14 +179,43 @@ const App = {
       competitive: 'badge-purple'
     };
 
-    let html = `
+    let html = '';
+
+    // Предупреждение о старых демо-данных v1.0
+    if (hasLegacyDemo && !sessionStorage.getItem('dismiss_legacy_banner')) {
+      html += `
+        <div class="legacy-demo-banner" style="background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 12px 16px; margin-bottom: 1rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap;">
+          <div style="color: #92400e; font-size: 0.95rem;">
+            <strong>⚠️ Обнаружены устаревшие демонстрационные данные (v1.0):</strong> фиктивные 563 решённые задачи и примеры уроков. Рекомендуется очистить базу до чистого нуля для реального использования (с автосохранением резервной копии).
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-sm btn-primary" onclick="App.cleanLegacyDemo()">Очистить до чистого нуля</button>
+            <button class="btn btn-sm btn-secondary" onclick="sessionStorage.setItem('dismiss_legacy_banner', '1'); App.renderTodayView();">Скрыть</button>
+          </div>
+        </div>
+      `;
+    }
+
+    // Предупреждение о не уместившихся задачах
+    if (schedule && schedule.unallocatedMinutes > 0) {
+      html += `
+        <div class="overload-warning-banner" style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 12px 16px; margin-bottom: 1rem; display: flex; align-items: center; gap: 1rem;">
+          <span style="font-size: 1.5rem;">ℹ️</span>
+          <div style="color: #1e40af; font-size: 0.9rem;">
+            <strong>Уведомление оптимизатора:</strong> задач на сегодня больше, чем доступного времени до отбоя в 21:30. Не уместилось ${schedule.unallocatedMinutes} мин (${schedule.unallocatedTasks.length} зад.). Они не удалены, а безопасно перенесены. Время сна строго защищено.
+          </div>
+        </div>
+      `;
+    }
+
+    html += `
       <!-- Верхний приветственный блок дня -->
       <div class="today-hero-card">
         <div class="today-hero-left">
           <div class="today-greeting-row">
             <h2>${greeting}!</h2>
             <span class="badge ${modeClasses[mode] || 'badge-info'}">${modeLabels[mode] || 'Обычный'}</span>
-            ${schedule && schedule.has8thLesson ? '<span class="badge badge-accent">8-й урок сегодня</span>' : ''}
+            ${schedule && schedule.has8thLesson ? '<span class="badge badge-accent">8-й урок сегодня (до 15:30)</span>' : ''}
           </div>
           <p class="today-date-text">📅 ${capitalizedDate}</p>
           <p class="text-muted">${schedule && schedule.modeReason ? schedule.modeReason : 'Автопланировщик держит всё под контролем.'}</p>
@@ -267,16 +301,8 @@ const App = {
       tasks.forEach((task, index) => {
         const isCompleted = task.status === 'completed';
         const isCurrent = task.status === 'in_progress';
-        const isSkipped = task.status === 'skipped';
 
         const categoryClass = `cat-${task.category || 'other'}`;
-        const statusLabels = {
-          pending: 'В ожидании',
-          in_progress: 'Выполняется',
-          completed: 'Выполнено',
-          skipped: 'Пропущено',
-          rescheduled: 'Перенесено'
-        };
         const statusClasses = {
           pending: 'badge-muted',
           in_progress: 'badge-warning',
@@ -331,6 +357,20 @@ const App = {
     container.innerHTML = html;
   },
 
+  async cleanLegacyDemo() {
+    if (!confirm('Очистить старые демонстрационные данные? Система сначала автоматически скачает резервную копию.')) {
+      return;
+    }
+    // Автоэкспорт бэкапа
+    if (typeof SettingsManager !== 'undefined') {
+      await SettingsManager.exportData();
+    }
+    await Database.cleanToZeroState();
+    await AIPlanner.autoReplan(this.selectedDate, Database, 'Очистка демо-данных');
+    alert('База очищена до чистого нуля! Прогресс готов к заполнению вашими реальными результатами.');
+    this.renderTodayView();
+  },
+
   async setTaskStatus(index, newStatus) {
     const schedule = await Database.getDaySchedule(this.selectedDate);
     if (!schedule || !schedule.tasks || !schedule.tasks[index]) return;
@@ -371,7 +411,6 @@ const App = {
         date: this.selectedDate
       });
 
-      // Если это было ДЗ, отметим в модуле ДЗ
       if (task.hwId) {
         const hw = await Database.get('homework', task.hwId);
         if (hw) {
@@ -388,7 +427,7 @@ const App = {
   },
 
   async replanToday() {
-    const result = await AIPlanner.autoReplan(this.selectedDate, Database, 'Ручной запуск перепланирования');
+    await AIPlanner.autoReplan(this.selectedDate, Database, 'Ручной запуск перепланирования');
     this.renderTodayView();
     alert('Расписание успешно оптимизировано и перестроено!');
   },
@@ -418,7 +457,6 @@ const App = {
 
     const schedule = await Database.getDaySchedule(this.selectedDate);
     const history = await Database.getReplanHistory(this.selectedDate);
-    const lastHistory = history.length > 0 ? history[history.length - 1] : null;
 
     modal.innerHTML = `
       <div class="modal-card modal-card-lg">
@@ -439,7 +477,7 @@ const App = {
             <div class="ai-explanation-text">
               ${schedule && schedule.modeReason ? schedule.modeReason : 'Расписание находится в оптимальном состоянии.'}
               <br><br>
-              <strong>Защищённые интервалы:</strong> Сон 21:30–06:00, Намаз ясту (${schedule ? schedule.yastuTime : '16:56'}), 60 мин игр на ПК, 25 мин спорта и ужин с родителями.
+              <strong>Защищённые интервалы:</strong> Сон 21:30–06:00 (8.5 ч), Намаз ясту (${schedule ? schedule.yastuTime : '16:56'}), 60 мин игр на ПК, 25 мин спорта и ужин с родителями.
             </div>
           </div>
 
@@ -507,7 +545,15 @@ const App = {
   }
 };
 
-window.App = App;
-window.addEventListener('DOMContentLoaded', () => {
-  App.init();
-});
+if (typeof window !== 'undefined') {
+  window.App = App;
+  window.addEventListener('DOMContentLoaded', () => {
+    App.init();
+  });
+}
+if (typeof globalThis !== 'undefined') {
+  globalThis.App = App;
+}
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = App;
+}

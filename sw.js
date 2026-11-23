@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lifeos-cache-v1';
+const CACHE_NAME = 'lifeos-cache-v1.1';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -6,6 +6,7 @@ const ASSETS_TO_CACHE = [
   './css/main.css',
   './css/components.css',
   './css/responsive.css',
+  './js/time.js',
   './js/database.js',
   './js/prayer.js',
   './js/scheduler.js',

@@ -3,9 +3,19 @@
  * Расчёт реальных показателей успеваемости, времени и прогресса.
  * Графики строятся на чистом HTML5 Canvas без сторонних библиотек.
  * Никаких фиктивных данных — при отсутствии данных выводится сообщение «Пока недостаточно данных».
+ * Интеграция с TimeUtils (Europe/Moscow).
  */
 
 const StatisticsManager = {
+  getTimeLib() {
+    return (typeof TimeUtils !== 'undefined') ? TimeUtils : (typeof globalThis !== 'undefined' && globalThis.TimeUtils ? globalThis.TimeUtils : null);
+  },
+
+  getTodayString() {
+    const t = this.getTimeLib();
+    return t ? t.getTodayStr() : new Date().toISOString().split('T')[0];
+  },
+
   init(db) {
     this.db = db;
     this.render();
@@ -21,8 +31,7 @@ const StatisticsManager = {
     const olympiads = await this.db.getOlympiads();
     const scheduleDays = await this.db.getAll('schedule_days');
 
-    const today = new Date();
-    const todayStr = today.toISOString().split('T')[0];
+    const todayStr = this.getTodayString();
 
     // 1. Выполненные задания за последние 7 дней
     const completedHw = allHw.filter(h => h.status === 'completed');
@@ -191,14 +200,16 @@ const StatisticsManager = {
     const w = canvas.width;
     const h = canvas.height;
 
+    const timeLib = this.getTimeLib();
+    const todayStr = this.getTodayString();
+
     // Собираем последние 7 дней
     const daysData = [];
-    const today = new Date();
+    const dayNames = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
     for (let i = 6; i >= 0; i--) {
-      const d = new Date(today);
-      d.setDate(d.getDate() - i);
-      const dStr = d.toISOString().split('T')[0];
-      const dayShort = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'][d.getDay()];
+      const dStr = timeLib ? timeLib.addDays(todayStr, -i) : new Date(Date.now() - i * 86400000).toISOString().split('T')[0];
+      const dow = timeLib ? timeLib.getDayOfWeek(dStr) : (new Date(dStr).getDay() || 7);
+      const dayShort = dayNames[dow % 7];
 
       const record = scheduleDays.find(s => s.date === dStr);
       let total = 0;
@@ -249,14 +260,22 @@ const StatisticsManager = {
       // Фон столбика
       ctx.fillStyle = '#e2e8f0';
       ctx.beginPath();
-      ctx.roundRect(x, h - padY - chartH, 32, chartH, [4, 4, 0, 0]);
+      if (typeof ctx.roundRect === 'function') {
+        ctx.roundRect(x, h - padY - chartH, 32, chartH, [4, 4, 0, 0]);
+      } else {
+        ctx.rect(x, h - padY - chartH, 32, chartH);
+      }
       ctx.fill();
 
       // Заполненный прогресс
       if (d.total > 0) {
         ctx.fillStyle = '#4f46e5';
         ctx.beginPath();
-        ctx.roundRect(x, y, 32, barHeight, [4, 4, 0, 0]);
+        if (typeof ctx.roundRect === 'function') {
+          ctx.roundRect(x, y, 32, barHeight, [4, 4, 0, 0]);
+        } else {
+          ctx.rect(x, y, 32, barHeight);
+        }
         ctx.fill();
       }
 
@@ -326,7 +345,11 @@ const StatisticsManager = {
       if (c.minutes === 0) return;
       ctx.fillStyle = c.color;
       ctx.beginPath();
-      ctx.roundRect(legendX, legendY, 12, 12, 3);
+      if (typeof ctx.roundRect === 'function') {
+        ctx.roundRect(legendX, legendY, 12, 12, 3);
+      } else {
+        ctx.rect(legendX, legendY, 12, 12);
+      }
       ctx.fill();
 
       ctx.fillStyle = '#334155';
@@ -390,14 +413,22 @@ const StatisticsManager = {
       // Фон полосы
       ctx.fillStyle = '#e2e8f0';
       ctx.beginPath();
-      ctx.roundRect(135, y, barMaxW, barH, 4);
+      if (typeof ctx.roundRect === 'function') {
+        ctx.roundRect(135, y, barMaxW, barH, 4);
+      } else {
+        ctx.rect(135, y, barMaxW, barH);
+      }
       ctx.fill();
 
       // Заполненный прогресс
       const fillW = Math.max(6, barMaxW * (item.percent / 100));
       ctx.fillStyle = item.percent > 70 ? '#10b981' : (item.percent > 40 ? '#4f46e5' : '#f59e0b');
       ctx.beginPath();
-      ctx.roundRect(135, y, fillW, barH, 4);
+      if (typeof ctx.roundRect === 'function') {
+        ctx.roundRect(135, y, fillW, barH, 4);
+      } else {
+        ctx.rect(135, y, fillW, barH);
+      }
       ctx.fill();
 
       // Процент и количество
@@ -416,7 +447,6 @@ const StatisticsManager = {
     const w = canvas.width;
     const h = canvas.height;
 
-    // Берем последние 6 выполненных заданий с фактическим временем
     const recent = completedHw.filter(h => h.actualMinutes).slice(-6);
 
     if (recent.length === 0) {
@@ -431,7 +461,6 @@ const StatisticsManager = {
     const chartH = h - padY * 2;
     const itemW = chartW / recent.length;
 
-    // Максимальное значение для масштаба
     const maxVal = Math.max(60, ...recent.map(r => Math.max(r.estimatedMinutes || 30, r.actualMinutes || 30)));
 
     // Сетка
@@ -451,7 +480,7 @@ const StatisticsManager = {
     }
 
     // Легенда
-    ctx.fillStyle = '#94a3b8';
+    ctx.fillStyle = '#cbd5e1';
     ctx.fillRect(w - 180, 12, 10, 10);
     ctx.fillStyle = '#64748b';
     ctx.font = '11px system-ui';
@@ -476,13 +505,21 @@ const StatisticsManager = {
       // План (серый)
       ctx.fillStyle = '#cbd5e1';
       ctx.beginPath();
-      ctx.roundRect(groupX, h - padY - estH, 16, estH, [3, 3, 0, 0]);
+      if (typeof ctx.roundRect === 'function') {
+        ctx.roundRect(groupX, h - padY - estH, 16, estH, [3, 3, 0, 0]);
+      } else {
+        ctx.rect(groupX, h - padY - estH, 16, estH);
+      }
       ctx.fill();
 
       // Факт (зеленый)
       ctx.fillStyle = '#10b981';
       ctx.beginPath();
-      ctx.roundRect(groupX + 18, h - padY - actH, 16, actH, [3, 3, 0, 0]);
+      if (typeof ctx.roundRect === 'function') {
+        ctx.roundRect(groupX + 18, h - padY - actH, 16, actH, [3, 3, 0, 0]);
+      } else {
+        ctx.rect(groupX + 18, h - padY - actH, 16, actH);
+      }
       ctx.fill();
 
       // Подпись предмета снизу
@@ -497,4 +534,7 @@ const StatisticsManager = {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = StatisticsManager;
+}
+if (typeof globalThis !== 'undefined') {
+  globalThis.StatisticsManager = StatisticsManager;
 }

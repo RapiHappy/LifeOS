@@ -1,7 +1,8 @@
 /**
  * LifeOS — Интеллектуальный ИИ-агент (AIPlanner)
- * Анализирует нагрузку, генерирует смысловые объяснения,
- * осуществляет предиктивное перепланирование и валидирует результаты.
+ * v1.1: Чёткое разделение локального планировщика и внешнего ИИ-прокси.
+ * Защита от хранения API-ключей на клиенте.
+ * Валидация внешних планов через Scheduler.verifyScheduleIntegrity.
  */
 
 const AIPlanner = {
@@ -10,130 +11,162 @@ const AIPlanner = {
    * @param {string} dateStr 'YYYY-MM-DD'
    * @param {Object} db - экземпляр Database
    * @param {string} [triggerReason] - причина перепланирования
-   * @returns {Promise<Object>} { schedule, explanation, changesLog }
+   * @returns {Promise<Object>} { success, schedule, explanation, source, appliedAt }
    */
   async autoReplan(dateStr, db, triggerReason = 'Обновление данных расписания') {
+    const timeLib = (typeof TimeUtils !== 'undefined') ? TimeUtils : (typeof globalThis !== 'undefined' && globalThis.TimeUtils ? globalThis.TimeUtils : null);
+    if (!dateStr && timeLib) {
+      dateStr = timeLib.getTodayStr();
+    } else if (!dateStr) {
+      dateStr = new Date().toISOString().split('T')[0];
+    }
+
     const settings = db.getSettings();
     const homework = await db.getAllHomework();
     const timetable = await db.getSchoolTimetable();
     const projects = await db.getProjects();
     const olympiads = await db.getOlympiads();
-    const activityLogs = await db.getActivityLogs();
 
-    // 1. Попытка запросить внешний защищенный API (если настроен)
     let externalSuccess = false;
     let newPlan = null;
     let aiExplanation = '';
+    let plannerSource = 'local';
 
-    if (settings.aiEndpoint && settings.aiEndpoint.trim() !== '') {
+    // 1. Попытка обратиться к внешнему защищённому эндпоинту (если указан в настройках)
+    if (settings.aiEndpoint && typeof settings.aiEndpoint === 'string' && settings.aiEndpoint.trim().startsWith('http')) {
       try {
         const extResult = await this.queryExternalAI(dateStr, {
           settings, homework, timetable, projects, olympiads
         });
-        if (extResult && extResult.tasks) {
-          // Валидация через локальный Scheduler (защита от галлюцинаций)
-          newPlan = this.sanitizeAndValidateAIPlan(extResult.tasks, dateStr, settings);
-          aiExplanation = extResult.explanation || 'Расписание оптимизировано внешней ИИ-моделью.';
-          externalSuccess = true;
+        if (extResult && extResult.tasks && Array.isArray(extResult.tasks)) {
+          const validated = this.sanitizeAndValidateAIPlan(extResult.tasks, dateStr, settings);
+          const integrity = Scheduler.verifyScheduleIntegrity(validated);
+          if (integrity.valid) {
+            newPlan = validated;
+            aiExplanation = extResult.explanation || 'Расписание оптимизировано внешней ИИ-моделью через безопасный эндпоинт.';
+            externalSuccess = true;
+            plannerSource = 'external';
+          } else {
+            console.warn('План внешнего ИИ не прошёл проверку целостности, откат на локальный алгоритм:', integrity.errors);
+          }
         }
       } catch (err) {
-        console.warn('Внешний ИИ недоступен, переход на локальный планировщик:', err);
+        console.warn('Внешний ИИ-сервис недоступен или вернул ошибку, используется локальный планировщик:', err.message);
       }
     }
 
-    // 2. Локальный алгоритмический ИИ-планировщик (основной/резервный)
+    // 2. Локальный детерминированный планировщик LifeOS
     if (!externalSuccess) {
       newPlan = await Scheduler.generateDailySchedule(dateStr, db);
-      aiExplanation = this.generateLocalExplanation(dateStr, newPlan, homework, projects, timetable, activityLogs);
+      aiExplanation = this.generateLocalExplanation(dateStr, newPlan, homework, projects, timetable, settings);
+      plannerSource = 'local';
     }
 
-    // 3. Автоматическое сохранение с бэкапом предыдущей версии
+    // 3. Автоматическое применение плана с резервной копией
     await Scheduler.applyScheduleWithBackup(dateStr, newPlan, db, triggerReason);
 
     return {
       success: true,
       schedule: newPlan,
       explanation: aiExplanation,
-      appliedAt: new Date().toISOString()
+      source: plannerSource,
+      appliedAt: timeLib ? timeLib.getMoscowDate().toISOString() : new Date().toISOString()
     };
   },
 
   /**
-   * Генерация понятного объяснения изменений на русском языке
+   * Генерация понятного объяснения работы локального планировщика на русском языке
    */
-  generateLocalExplanation(dateStr, schedule, homework, projects, timetable, activityLogs) {
+  generateLocalExplanation(dateStr, schedule, homework, projects, timetable, settings) {
+    const timeLib = (typeof TimeUtils !== 'undefined') ? TimeUtils : (typeof globalThis !== 'undefined' && globalThis.TimeUtils ? globalThis.TimeUtils : null);
     const mode = schedule.mode;
     const parts = [];
 
-    // Приветствие и режим
+    parts.push(`⚙️ **Локальный планировщик LifeOS (автономно):**`);
+
+    // Хакатон и дни до него
+    const hackathonDate = '2026-11-27';
+    let daysToHackathon = null;
+    if (timeLib) {
+      daysToHackathon = timeLib.diffDays(dateStr, hackathonDate);
+    }
+
     if (mode === 'competitive') {
-      parts.push(`🏆 **Соревновательный режим активирован.** До хакатона проекта «Миросборка» (27 ноября) осталось совсем немного времени! Выделен фокусный блок разработки на 70 минут.`);
+      const hackText = daysToHackathon !== null ? `(до 27 ноября: ${daysToHackathon} дн.)` : '';
+      parts.push(`🏆 **Соревновательный режим:** приоритет отдан подготовке к хакатону «Миросборка» ${hackText}. Выделен фокусный блок разработки.`);
     } else if (mode === 'loaded') {
-      parts.push(`⚡ **Загруженный режим.** Высокая учебная нагрузка по домашним заданиям. Приоритет отдан обязательным урокам на завтра.`);
+      parts.push(`⚡ **Загруженный режим:** повышенная нагрузка по домашним заданиям. Приоритет отдан обязательным урокам на завтра.`);
     } else {
-      parts.push(`🌱 **Обычный сбалансированный режим.** Равномерное распределение: учёба, спорт, семья, игры и сон.`);
+      parts.push(`🌱 **Сбалансированный режим:** равномерное распределение между школой, ДЗ, отдыхом и развитием.`);
     }
 
     // Восьмой урок
     if (schedule.has8thLesson) {
-      parts.push(`📍 Сегодня в расписании школы **8 уроков** (до ${schedule.schoolEndTime}). Время возвращения домой и обед сдвинуты без наложений.`);
+      parts.push(`📍 Сегодня в расписании школы **8 уроков** (до ${schedule.schoolEndTime}). Возвращение домой и обед синхронизированы без наложений.`);
     }
 
     // Намаз Ясту
-    parts.push(`🕌 Время намаза ясту в Актаныше зафиксировано на **${schedule.yastuTime}**. Время защищено от любых смещений.`);
+    parts.push(`🕌 Намаз ясту (${schedule.yastuCity || 'Актаныш'}): зафиксирован на **${schedule.yastuTime}** (${schedule.yastuDuration || 20} мин). Защищён от смещений.`);
 
     // Защищённые блоки
-    parts.push(`🛡️ Все ключевые блоки гарантированы: 1 час игр на ПК, 25 мин спорта, ужин с родителями и отбой ровно в 21:30.`);
+    parts.push(`🛡️ Все гарантированные окна сохранены: сон 21:30–06:00 (8.5 ч), 1 час игр на ПК, 25 мин спорта, ужин с семьёй.`);
 
+    // Непоместившиеся задачи
     if (schedule.unallocatedMinutes > 0) {
-      parts.push(`⚠️ Внимание: задач на сегодня больше, чем доступного времени до отбоя. Необязательные задачи перенесены, сон в 21:30 не нарушен.`);
+      parts.push(`⚠️ **Внимание:** суммарный объём задач превысил свободное время до отбоя. Не уместилось ${schedule.unallocatedMinutes} мин (${schedule.unallocatedTasks.length} зад.). Они безопасно перенесены, сон в 21:30 строго сохранён.`);
     }
 
     return parts.join('\n\n');
   },
 
   /**
-   * Валидация и защита от изменений защищенных блоков внешним ИИ
+   * Валидация и защита обязательных блоков при получении плана от внешнего ИИ
    */
   sanitizeAndValidateAIPlan(externalTasks, dateStr, settings) {
-    // Гарантируем, что сон, ясту, игры и школьные уроки не удалены
-    const sleepStart = settings.sleepStart || '21:30';
-    const yastuBlock = PrayerManager.getYastuScheduleBlock(dateStr, settings);
+    const timeLib = (typeof TimeUtils !== 'undefined') ? TimeUtils : (typeof globalThis !== 'undefined' && globalThis.TimeUtils ? globalThis.TimeUtils : null);
+    const timeToMin = (t) => {
+      if (timeLib) return timeLib.timeToMin(t);
+      const [h, m] = t.split(':').map(Number);
+      return h * 60 + m;
+    };
 
-    // Фильтруем любые задачи, которые залезают на сон после 21:30
-    const sleepMin = Scheduler.timeToMin(sleepStart);
+    const sleepStart = settings.sleepStart || '21:30';
+    const sleepMin = timeToMin(sleepStart);
+
+    // Убираем задачи, выходящие за время отбоя
     const validTasks = externalTasks.filter(t => {
-      const startMin = Scheduler.timeToMin(t.startTime);
-      return startMin < sleepMin;
+      const sMin = timeToMin(t.startTime);
+      return sMin < sleepMin;
     });
 
     // Проверяем наличие блока Ясту
     const hasYastu = validTasks.some(t => t.category === 'prayer');
     if (!hasYastu) {
+      const yastuBlock = PrayerManager.getYastuScheduleBlock(dateStr, settings);
       validTasks.push(yastuBlock);
     }
 
-    // Сортируем по времени
-    validTasks.sort((a, b) => Scheduler.timeToMin(a.startTime) - Scheduler.timeToMin(b.startTime));
+    // Сортировка по времени
+    validTasks.sort((a, b) => timeToMin(a.startTime) - timeToMin(b.startTime));
 
     return {
       date: dateStr,
       mode: settings.activeMode || 'normal',
       tasks: validTasks,
-      generatedAt: new Date().toISOString()
+      generatedAt: timeLib ? timeLib.getMoscowDate().toISOString() : new Date().toISOString()
     };
   },
 
   /**
-   * Запрос к внешнему защищённому эндпоинту ИИ (Cloudflare Worker или OpenAI/Gemini совместимый прокси)
+   * Запрос к внешнему защищённому эндпоинту ИИ (Cloudflare Worker / Server Proxy)
+   * Без хранения секретных API-ключей в клиентском JavaScript.
    */
   async queryExternalAI(dateStr, payload) {
     const { settings, homework, timetable, projects } = payload;
     const response = await fetch(settings.aiEndpoint, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-        ...(settings.aiApiKey ? { 'Authorization': `Bearer ${settings.aiApiKey}` } : {})
+        'Content-Type': 'application/json'
       },
       body: JSON.stringify({
         date: dateStr,
@@ -148,48 +181,53 @@ const AIPlanner = {
     });
 
     if (!response.ok) {
-      throw new Error(`AI API responded with status ${response.status}`);
+      throw new Error(`AI proxy returned HTTP ${response.status}`);
     }
 
     return await response.json();
   },
 
   /**
-   * Интерактивный диалог / советник с ИИ для пользователя
+   * Интерактивный советник / помощник для пользователя
    */
   async getAdvice(userQuestion, db) {
+    const timeLib = (typeof TimeUtils !== 'undefined') ? TimeUtils : (typeof globalThis !== 'undefined' && globalThis.TimeUtils ? globalThis.TimeUtils : null);
+    const todayStr = timeLib ? timeLib.getTodayStr() : new Date().toISOString().split('T')[0];
+
     const settings = db.getSettings();
-    const todayStr = new Date().toISOString().split('T')[0];
     const schedule = await db.getDaySchedule(todayStr);
     const homework = await db.getAllHomework();
-    const projects = await db.getProjects();
 
-    const q = userQuestion.toLowerCase();
+    const q = (userQuestion || '').toLowerCase();
 
-    // Быстрый локальный семантический анализатор
     if (q.includes('хакатон') || q.includes('миросборк') || q.includes('проект')) {
-      return `До хакатона проекта «Миросборка» (27 ноября 2026 г.) осталось 4 дня. Сейчас мы находимся в соревновательном режиме. В расписании на сегодня зарезервирован отдельный блок разработки. Рекомендую сфокусироваться на стабильности прототипа и подготовке демонстрации. Домашка оптимизирована, чтобы не отвлекать от проекта.`;
+      const days = timeLib ? timeLib.diffDays(todayStr, '2026-11-27') : 4;
+      const daysText = days > 0 ? `осталось ${days} дн.` : 'сегодня!';
+      return `До хакатона проекта «Миросборка» (27 ноября 2026 г.) ${daysText}. Сейчас активен соревновательный режим. В расписании выделен фокусный блок разработки. Рекомендую сосредоточиться на стабильности прототипа и репетиции питча.`;
     }
 
     if (q.includes('математик') || q.includes('егэ') || q.includes('профиль')) {
-      return `По профильной математике ключевая цель — освоить обе части (1–12 и 13–19). В плане на вечер предусмотрен разбор уравнений и неравенств (задания 13 и 15). Рекомендуем решать минимум 2 задачи второй части ежедневно без калькулятора.`;
+      return `По профильной математике цель — освоить обе части (1–12 и 13–19). В расписании предусмотрен блок разбора тем. Рекомендую решать минимум 2 задачи второй части (уравнения 13 или неравенства 15) без использования калькулятора.`;
     }
 
     if (q.includes('устал') || q.includes('отдых') || q.includes('перегруз')) {
-      return `Главное правило LifeOS — предотвращение выгорания. Отбой строго в 21:30 (8.5 часов сна). Также сегодня запланирован 1 час игр на ПК и 45 минут отдыха без монитора перед сном. Если чувствуешь сильное утомление, переключи режим на «Загруженный» или перенеси необязательные задачи в настройках.`;
+      return `Главное правило LifeOS — предотвращение выгорания. Отбой строго в 21:30 (8.5 ч полноценного сна). Также сегодня запланирован 1 час игр на ПК и 45 минут отдыха без компьютера перед сном.`;
     }
 
     if (q.includes('намаз') || q.includes('ясту') || q.includes('молитв')) {
       const yastu = PrayerManager.calculateYastu(todayStr, settings);
-      return `Время намаза ясту для Актаныша сегодня: ${yastu.time}. В расписании этот блок защищён от любых наложений. Продолжительность: ${yastu.duration} минут.`;
+      return `Время намаза ясту для Актаныша сегодня: ${yastu.time}. В расписании этот блок защищён от любых сдвигов. Продолжительность: ${yastu.duration} мин.`;
     }
 
-    // Общий оптимизационный ответ
     const pendingHw = homework.filter(h => h.status !== 'completed').length;
-    return `На сегодня в расписании запланировано ${schedule ? schedule.tasks.length : 0} блоков, активных домашних заданий: ${pendingHw}. Расписание оптимизировано с сохранением всех защищённых окон (спорт, семья, игры, намаз ясту и сон в 21:30). Смело двигайся по плану!`;
+    const taskCount = (schedule && schedule.tasks) ? schedule.tasks.length : 0;
+    return `На сегодня в расписании ${taskCount} блоков, активных домашних заданий: ${pendingHw}. Защищённые окна (спорт, семья, игры, намаз ясту и сон в 21:30) полностью сохранены. План сбалансирован.`;
   }
 };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = AIPlanner;
+}
+if (typeof globalThis !== 'undefined') {
+  globalThis.AIPlanner = AIPlanner;
 }

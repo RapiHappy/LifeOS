@@ -1,7 +1,14 @@
 /**
- * LifeOS — Модуль базы данных (IndexedDB + LocalStorage)
- * Обеспечивает надёжное локальное хранение данных без внешней регистрации
+ * LifeOS — Модуль базы данных (database.js v1.1)
+ * Обеспечивает надёжное локальное хранение данных в IndexedDB + LocalStorage.
+ * Полностью чистый старт: никаких выдуманных выполненных задач и фальшивых процентов.
+ * Предусмотрен изолированный демонстрационный режим (Demo Mode) с безопасной очисткой.
  */
+
+// Поддержка TimeUtils как в браузере, так и в Node.js
+const _TimeUtilsDB = (typeof globalThis !== 'undefined' && typeof globalThis.TimeUtils !== 'undefined')
+  ? globalThis.TimeUtils
+  : (typeof require !== 'undefined' ? require('./time.js') : null);
 
 const DB_NAME = 'LifeOS_DB';
 const DB_VERSION = 1;
@@ -33,9 +40,8 @@ const Database = {
     notificationSound: true,
     notificationPrayer: true,
     notificationRest: true,
-    aiEndpoint: '',
-    aiApiKey: '',
-    aiModel: 'default'
+    aiEndpoint: '', // URL безопасного прокси (Cloudflare Worker)
+    isDemoMode: false
   },
 
   /**
@@ -110,17 +116,11 @@ const Database = {
     });
   },
 
-  /**
-   * Получить транзакцию и хранилище
-   */
   getStore(storeName, mode = 'readonly') {
     const tx = this.db.transaction(storeName, mode);
     return tx.objectStore(storeName);
   },
 
-  /**
-   * Универсальные операции с IndexedDB
-   */
   async get(storeName, key) {
     return new Promise((resolve, reject) => {
       const store = this.getStore(storeName, 'readonly');
@@ -171,9 +171,13 @@ const Database = {
   // ==========================================
   getSettings() {
     try {
+      if (typeof localStorage === 'undefined') return { ...this.defaultSettings };
       const saved = localStorage.getItem(SETTINGS_KEY);
       if (!saved) return { ...this.defaultSettings };
-      return { ...this.defaultSettings, ...JSON.parse(saved) };
+      const parsed = JSON.parse(saved);
+      // Удаляем секретные ключи, если они случайно остались в старой версии
+      if (parsed.aiApiKey) delete parsed.aiApiKey;
+      return { ...this.defaultSettings, ...parsed };
     } catch (e) {
       console.warn('Failed to parse settings from LocalStorage', e);
       return { ...this.defaultSettings };
@@ -181,8 +185,12 @@ const Database = {
   },
 
   saveSettings(newSettings) {
-    const merged = { ...this.getSettings(), ...newSettings };
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(merged));
+    const sanitized = { ...newSettings };
+    if (sanitized.aiApiKey) delete sanitized.aiApiKey; // Безопасность: не хранить API-ключ в LocalStorage
+    const merged = { ...this.getSettings(), ...sanitized };
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(merged));
+    }
     return merged;
   },
 
@@ -206,7 +214,9 @@ const Database = {
 
   async addHomework(hw) {
     if (!hw.id) hw.id = 'hw_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
-    if (!hw.createdAt) hw.createdAt = new Date().toISOString();
+    if (!hw.createdAt) {
+      hw.createdAt = _TimeUtilsDB ? _TimeUtilsDB.getTodayStr() : new Date().toISOString().split('T')[0];
+    }
     if (!hw.status) hw.status = 'pending';
     await this.put('homework', hw);
     return hw;
@@ -271,10 +281,11 @@ const Database = {
 
   // Логи активности
   async logActivity(entry) {
+    const today = _TimeUtilsDB ? _TimeUtilsDB.getTodayStr() : new Date().toISOString().split('T')[0];
     const record = {
       ...entry,
       timestamp: entry.timestamp || new Date().toISOString(),
-      date: entry.date || new Date().toISOString().split('T')[0]
+      date: entry.date || today
     };
     return await this.put('activity_log', record);
   },
@@ -321,221 +332,196 @@ const Database = {
   },
 
   // ==========================================
-  // НАЧАЛЬНЫЕ ДАННЫЕ (SEED DATA)
+  // НАЧАЛЬНЫЕ ДАННЫЕ (ЧИСТЫЙ СТАРТ БЕЗ ФЕЙКОВ)
   // ==========================================
   async checkAndSeedData() {
     const timetable = await this.getAll('school_timetable');
+    const topics = await this.getAll('ege_topics');
+
+    // Если таблица тем пуста, инициализируем чистый кодификатор
+    if (topics.length === 0) {
+      await this.seedCleanEgeTopics();
+    }
+
+    // Если расписание пусто, инициализируем базовый шаблон 10 класса
     if (timetable.length === 0) {
-      console.log('Seeding initial LifeOS data...');
-      await this.seedSchoolTimetable();
-      await this.seedHomework();
-      await this.seedEgeTopics();
-      await this.seedOlympiads();
-      await this.seedProjects();
+      await this.seedRealisticSchoolTimetable();
+    }
+
+    const projects = await this.getAll('projects');
+    if (projects.length === 0) {
+      await this.seedCleanProjects();
+    }
+
+    const olympiads = await this.getAll('olympiads');
+    if (olympiads.length === 0) {
+      await this.seedCleanOlympiads();
     }
   },
 
-  async seedSchoolTimetable() {
-    // 1 - Понедельник (7 уроков, 08:00 - 14:35)
+  /**
+   * Проверка на наличие старых демонстрационных данных v1.0
+   * @returns {Promise<boolean>}
+   */
+  async hasLegacyDemoData() {
+    const math1 = await this.get('ege_topics', 'math_1');
+    if (math1 && (math1.solvedCount > 0 || math1.status === 'mastered')) {
+      return true;
+    }
+    const hwList = await this.getAll('homework');
+    if (hwList.some(h => h.id === 'hw_1' && h.title.includes('Решить вариант №12'))) {
+      return true;
+    }
+    return false;
+  },
+
+  /**
+   * Чистый сброс до нулевого прогресса с предварительным бэкапом
+   */
+  async cleanToZeroState() {
+    // 1. Создаем резервную копию перед сбросом
+    const backupJson = await this.exportAllData();
+
+    // 2. Очищаем фальшивые данные
+    await this.clearStore('homework'); // чистый список ДЗ
+    await this.clearStore('activity_log'); // чистые логи
+    await this.clearStore('replan_history');
+    await this.clearStore('schedule_days');
+
+    // 3. Переинициализируем темы ЕГЭ на чистые нули
+    await this.clearStore('ege_topics');
+    await this.seedCleanEgeTopics();
+
+    // 4. Переинициализируем проекты и олимпиады без фальшивых галочек
+    await this.clearStore('projects');
+    await this.seedCleanProjects();
+
+    await this.clearStore('olympiads');
+    await this.seedCleanOlympiads();
+
+    this.saveSettings({ isDemoMode: false });
+    return backupJson;
+  },
+
+  /**
+   * Реалистичное школьное расписание для 10 класса (уроки заканчиваются в ~13:40, 8-е уроки во Вт и Чт)
+   */
+  async seedRealisticSchoolTimetable() {
+    // 1 - Понедельник (6 уроков, 08:00 - 13:40)
     await this.saveDayTimetable(1, [
-      { lessonNumber: 1, subject: 'Разговоры о важном', startTime: '08:00', endTime: '08:45', room: '204', isExtra: false, isCanceled: false },
-      { lessonNumber: 2, subject: 'Алгебра (профиль)', startTime: '08:55', endTime: '09:40', room: '204', isExtra: false, isCanceled: false },
-      { lessonNumber: 3, subject: 'Алгебра (профиль)', startTime: '09:55', endTime: '10:40', room: '204', isExtra: false, isCanceled: false },
-      { lessonNumber: 4, subject: 'Физика', startTime: '10:55', endTime: '11:40', room: '301', isExtra: false, isCanceled: false },
-      { lessonNumber: 5, subject: 'Русский язык', startTime: '11:55', endTime: '12:40', room: '108', isExtra: false, isCanceled: false },
-      { lessonNumber: 6, subject: 'Информатика', startTime: '12:55', endTime: '13:40', room: '210', isExtra: false, isCanceled: false },
-      { lessonNumber: 7, subject: 'Обществознание', startTime: '13:50', endTime: '14:35', room: '206', isExtra: false, isCanceled: false }
+      { lessonNumber: 1, subject: 'Разговоры о важном', startTime: '08:00', endTime: '08:45', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 2, subject: 'Алгебра (профиль)', startTime: '08:55', endTime: '09:40', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 3, subject: 'Алгебра (профиль)', startTime: '09:55', endTime: '10:40', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 4, subject: 'Физика', startTime: '10:55', endTime: '11:40', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 5, subject: 'Русский язык', startTime: '11:55', endTime: '12:40', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 6, subject: 'Информатика', startTime: '12:55', endTime: '13:40', room: '', isExtra: false, isCanceled: false }
     ]);
 
-    // 2 - Вторник (8 уроков, 08:00 - 15:30 — 8-Й УРОК!)
+    // 2 - Вторник (6 основных уроков + 8-й урок дополнительный, до 15:30)
     await this.saveDayTimetable(2, [
-      { lessonNumber: 1, subject: 'Геометрия (профиль)', startTime: '08:00', endTime: '08:45', room: '204', isExtra: false, isCanceled: false },
-      { lessonNumber: 2, subject: 'Геометрия (профиль)', startTime: '08:55', endTime: '09:40', room: '204', isExtra: false, isCanceled: false },
-      { lessonNumber: 3, subject: 'Литература', startTime: '09:55', endTime: '10:40', room: '108', isExtra: false, isCanceled: false },
-      { lessonNumber: 4, subject: 'Английский язык', startTime: '10:55', endTime: '11:40', room: '305', isExtra: false, isCanceled: false },
-      { lessonNumber: 5, subject: 'Химия', startTime: '11:55', endTime: '12:40', room: '312', isExtra: false, isCanceled: false },
-      { lessonNumber: 6, subject: 'История', startTime: '12:55', endTime: '13:40', room: '206', isExtra: false, isCanceled: false },
-      { lessonNumber: 7, subject: 'Физическая культура', startTime: '13:50', endTime: '14:35', room: 'Спортзал', isExtra: false, isCanceled: false },
-      { lessonNumber: 8, subject: '8-й урок: Профильный практикум ЕГЭ', startTime: '14:45', endTime: '15:30', room: '204', isExtra: true, isCanceled: false, notes: 'Обязательный дополнительный 8-й урок во вторник' }
+      { lessonNumber: 1, subject: 'Геометрия (профиль)', startTime: '08:00', endTime: '08:45', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 2, subject: 'Геометрия (профиль)', startTime: '08:55', endTime: '09:40', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 3, subject: 'Литература', startTime: '09:55', endTime: '10:40', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 4, subject: 'Английский язык', startTime: '10:55', endTime: '11:40', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 5, subject: 'Химия', startTime: '11:55', endTime: '12:40', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 6, subject: 'История', startTime: '12:55', endTime: '13:40', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 8, subject: '8-й урок: Профильный практикум ЕГЭ', startTime: '14:45', endTime: '15:30', room: '', isExtra: true, isCanceled: false, notes: 'Дополнительное занятие во вторник' }
     ]);
 
-    // 3 - Среда (7 уроков, 08:00 - 14:35)
+    // 3 - Среда (6 уроков, 08:00 - 13:40)
     await this.saveDayTimetable(3, [
-      { lessonNumber: 1, subject: 'Информатика', startTime: '08:00', endTime: '08:45', room: '210', isExtra: false, isCanceled: false },
-      { lessonNumber: 2, subject: 'Информатика', startTime: '08:55', endTime: '09:40', room: '210', isExtra: false, isCanceled: false },
-      { lessonNumber: 3, subject: 'Физика', startTime: '09:55', endTime: '10:40', room: '301', isExtra: false, isCanceled: false },
-      { lessonNumber: 4, subject: 'Алгебра (профиль)', startTime: '10:55', endTime: '11:40', room: '204', isExtra: false, isCanceled: false },
-      { lessonNumber: 5, subject: 'Русский язык', startTime: '11:55', endTime: '12:40', room: '108', isExtra: false, isCanceled: false },
-      { lessonNumber: 6, subject: 'Биология', startTime: '12:55', endTime: '13:40', room: '308', isExtra: false, isCanceled: false },
-      { lessonNumber: 7, subject: 'ОБЗР', startTime: '13:50', endTime: '14:35', room: '102', isExtra: false, isCanceled: false }
+      { lessonNumber: 1, subject: 'Информатика', startTime: '08:00', endTime: '08:45', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 2, subject: 'Информатика', startTime: '08:55', endTime: '09:40', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 3, subject: 'Физика', startTime: '09:55', endTime: '10:40', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 4, subject: 'Алгебра (профиль)', startTime: '10:55', endTime: '11:40', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 5, subject: 'Русский язык', startTime: '11:55', endTime: '12:40', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 6, subject: 'Биология', startTime: '12:55', endTime: '13:40', room: '', isExtra: false, isCanceled: false }
     ]);
 
-    // 4 - Четверг (8 уроков, 08:00 - 15:30 — 8-Й УРОК!)
+    // 4 - Четверг (6 основных уроков + 8-й урок, до 15:30)
     await this.saveDayTimetable(4, [
-      { lessonNumber: 1, subject: 'Алгебра (профиль)', startTime: '08:00', endTime: '08:45', room: '204', isExtra: false, isCanceled: false },
-      { lessonNumber: 2, subject: 'Алгебра (профиль)', startTime: '08:55', endTime: '09:40', room: '204', isExtra: false, isCanceled: false },
-      { lessonNumber: 3, subject: 'Физика', startTime: '09:55', endTime: '10:40', room: '301', isExtra: false, isCanceled: false },
-      { lessonNumber: 4, subject: 'Литература', startTime: '10:55', endTime: '11:40', room: '108', isExtra: false, isCanceled: false },
-      { lessonNumber: 5, subject: 'Английский язык', startTime: '11:55', endTime: '12:40', room: '305', isExtra: false, isCanceled: false },
-      { lessonNumber: 6, subject: 'География', startTime: '12:55', endTime: '13:40', room: '202', isExtra: false, isCanceled: false },
-      { lessonNumber: 7, subject: 'Физическая культура', startTime: '13:50', endTime: '14:35', room: 'Спортзал', isExtra: false, isCanceled: false },
-      { lessonNumber: 8, subject: '8-й урок: Олимпиадное программирование IT', startTime: '14:45', endTime: '15:30', room: '210', isExtra: true, isCanceled: false, notes: 'Обязательный дополнительный 8-й урок в четверг' }
+      { lessonNumber: 1, subject: 'Алгебра (профиль)', startTime: '08:00', endTime: '08:45', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 2, subject: 'Алгебра (профиль)', startTime: '08:55', endTime: '09:40', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 3, subject: 'Физика', startTime: '09:55', endTime: '10:40', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 4, subject: 'Литература', startTime: '10:55', endTime: '11:40', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 5, subject: 'Английский язык', startTime: '11:55', endTime: '12:40', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 6, subject: 'Обществознание', startTime: '12:55', endTime: '13:40', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 8, subject: '8-й урок: Олимпиадный IT-практикум', startTime: '14:45', endTime: '15:30', room: '', isExtra: true, isCanceled: false, notes: 'Дополнительное занятие в четверг' }
     ]);
 
-    // 5 - Пятница (7 уроков, 08:00 - 14:35)
+    // 5 - Пятница (6 уроков, 08:00 - 13:40)
     await this.saveDayTimetable(5, [
-      { lessonNumber: 1, subject: 'Информатика', startTime: '08:00', endTime: '08:45', room: '210', isExtra: false, isCanceled: false },
-      { lessonNumber: 2, subject: 'Информатика', startTime: '08:55', endTime: '09:40', room: '210', isExtra: false, isCanceled: false },
-      { lessonNumber: 3, subject: 'Геометрия (профиль)', startTime: '09:55', endTime: '10:40', room: '204', isExtra: false, isCanceled: false },
-      { lessonNumber: 4, subject: 'Русский язык', startTime: '10:55', endTime: '11:40', room: '108', isExtra: false, isCanceled: false },
-      { lessonNumber: 5, subject: 'Физика', startTime: '11:55', endTime: '12:40', room: '301', isExtra: false, isCanceled: false },
-      { lessonNumber: 6, subject: 'История', startTime: '12:55', endTime: '13:40', room: '206', isExtra: false, isCanceled: false },
-      { lessonNumber: 7, subject: 'Классный час / Профориентация', startTime: '13:50', endTime: '14:35', room: '204', isExtra: false, isCanceled: false }
+      { lessonNumber: 1, subject: 'Информатика', startTime: '08:00', endTime: '08:45', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 2, subject: 'Информатика', startTime: '08:55', endTime: '09:40', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 3, subject: 'Геометрия (профиль)', startTime: '09:55', endTime: '10:40', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 4, subject: 'Русский язык', startTime: '10:55', endTime: '11:40', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 5, subject: 'Физика', startTime: '11:55', endTime: '12:40', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 6, subject: 'История', startTime: '12:55', endTime: '13:40', room: '', isExtra: false, isCanceled: false }
     ]);
 
     // 6 - Суббота (5 уроков, 08:00 - 12:40)
     await this.saveDayTimetable(6, [
-      { lessonNumber: 1, subject: 'Математический практикум', startTime: '08:00', endTime: '08:45', room: '204', isExtra: false, isCanceled: false },
-      { lessonNumber: 2, subject: 'Физический практикум', startTime: '08:55', endTime: '09:40', room: '301', isExtra: false, isCanceled: false },
-      { lessonNumber: 3, subject: 'Родная литература', startTime: '09:55', endTime: '10:40', room: '108', isExtra: false, isCanceled: false },
-      { lessonNumber: 4, subject: 'Обществознание', startTime: '10:55', endTime: '11:40', room: '206', isExtra: false, isCanceled: false },
-      { lessonNumber: 5, subject: 'Элективный курс IT', startTime: '11:55', endTime: '12:40', room: '210', isExtra: false, isCanceled: false }
+      { lessonNumber: 1, subject: 'Математический практикум', startTime: '08:00', endTime: '08:45', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 2, subject: 'Физический практикум', startTime: '08:55', endTime: '09:40', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 3, subject: 'Родная литература', startTime: '09:55', endTime: '10:40', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 4, subject: 'География', startTime: '10:55', endTime: '11:40', room: '', isExtra: false, isCanceled: false },
+      { lessonNumber: 5, subject: 'ОБЗР', startTime: '11:55', endTime: '12:40', room: '', isExtra: false, isCanceled: false }
     ]);
   },
 
-  async seedHomework() {
-    const todayStr = '2026-11-23';
-    const tomorrowStr = '2026-11-24';
-    const dayAfterTomorrowStr = '2026-11-25';
-
-    const items = [
-      {
-        id: 'hw_1',
-        subject: 'Алгебра (профиль)',
-        title: 'Решить вариант №12 (задания 13 и 15)',
-        description: 'Тригонометрическое уравнение с отбором корней и логарифмическое неравенство с ОДЗ',
-        dueDate: tomorrowStr,
-        estimatedMinutes: 40,
-        actualMinutes: null,
-        difficulty: 3, // 1-легко, 2-средне, 3-сложно
-        priority: 'high', // low, medium, high, critical
-        required: true,
-        status: 'pending',
-        createdAt: todayStr
-      },
-      {
-        id: 'hw_2',
-        subject: 'Физика',
-        title: 'Задачи 8.1–8.5 на импульс и энергию',
-        description: 'Параграф 24, упр. 8 задачи 1, 2, 3, 5 на закон сохранения энергии',
-        dueDate: tomorrowStr,
-        estimatedMinutes: 30,
-        actualMinutes: null,
-        difficulty: 2,
-        priority: 'medium',
-        required: true,
-        status: 'pending',
-        createdAt: todayStr
-      },
-      {
-        id: 'hw_3',
-        subject: 'Русский язык',
-        title: 'Выучить теорию и решить задания 9–12',
-        description: 'Безударные гласные в корне слова, приставки ПРЕ/ПРИ, суффиксы и окончания глаголов',
-        dueDate: dayAfterTomorrowStr,
-        estimatedMinutes: 25,
-        actualMinutes: null,
-        difficulty: 2,
-        priority: 'medium',
-        required: true,
-        status: 'pending',
-        createdAt: todayStr
-      },
-      {
-        id: 'hw_4',
-        subject: 'Информатика',
-        title: 'Код на Python для задачи 24 ЕГЭ',
-        description: 'Поиск самой длинной непрерывной цепочки символов без сочетаний гласных',
-        dueDate: dayAfterTomorrowStr,
-        estimatedMinutes: 35,
-        actualMinutes: null,
-        difficulty: 3,
-        priority: 'high',
-        required: true,
-        status: 'pending',
-        createdAt: todayStr
-      },
-      {
-        id: 'hw_5',
-        subject: 'Английский язык',
-        title: 'Составить 10 предложений (Conditionals)',
-        description: 'Упражнение 4 на стр. 62 — Conditionals Type 2 & 3',
-        dueDate: tomorrowStr,
-        estimatedMinutes: 15,
-        actualMinutes: null,
-        difficulty: 1,
-        priority: 'low',
-        required: true,
-        status: 'pending',
-        createdAt: todayStr
-      }
-    ];
-
-    for (const item of items) {
-      await this.addHomework(item);
-    }
-  },
-
-  async seedEgeTopics() {
+  /**
+   * Чистый кодификатор тем ЕГЭ (все статусы not_started, решено 0, верных 0)
+   */
+  async seedCleanEgeTopics() {
     // 1. Профильная математика (Часть 1: 1-12, Часть 2: 13-19)
     const mathTopics = [
-      { id: 'math_1', subject: 'math', part: 1, code: '№1', title: 'Планиметрия (треугольники, четырехугольники, окружность)', status: 'mastered', solvedCount: 42, correctCount: 39, mistakes: ['Ошибки при вычислении радиуса вписанной окружности'], plannedReviewDate: '2026-11-26' },
-      { id: 'math_2', subject: 'math', part: 1, code: '№2', title: 'Векторы и координаты на плоскости', status: 'mastered', solvedCount: 30, correctCount: 29, mistakes: [], plannedReviewDate: '2026-11-28' },
-      { id: 'math_3', subject: 'math', part: 1, code: '№3', title: 'Стереометрия базовые многогранники и тела вращения', status: 'in_progress', solvedCount: 25, correctCount: 20, mistakes: ['Объем усеченного конуса'], plannedReviewDate: '2026-11-24' },
-      { id: 'math_4', subject: 'math', part: 1, code: '№4', title: 'Начала теории вероятностей (классическая)', status: 'mastered', solvedCount: 35, correctCount: 34, mistakes: [], plannedReviewDate: '2026-11-29' },
-      { id: 'math_5', subject: 'math', part: 1, code: '№5', title: 'Сложная вероятность, формулы Бернулли и Байеса', status: 'in_progress', solvedCount: 28, correctCount: 22, mistakes: ['Дерево вероятностей в задачах с монетами'], plannedReviewDate: '2026-11-25' },
-      { id: 'math_6', subject: 'math', part: 1, code: '№6', title: 'Простейшие уравнения (показательные, логарифмические, иррациональные)', status: 'mastered', solvedCount: 50, correctCount: 48, mistakes: [], plannedReviewDate: '2026-12-01' },
-      { id: 'math_7', subject: 'math', part: 1, code: '№7', title: 'Вычисления и тригонометрические преобразования', status: 'mastered', solvedCount: 45, correctCount: 42, mistakes: ['Формулы приведения со сменой знака'], plannedReviewDate: '2026-11-27' },
-      { id: 'math_8', subject: 'math', part: 1, code: '№8', title: 'Производная, касательная и геометрический смысл', status: 'mastered', solvedCount: 38, correctCount: 36, mistakes: [], plannedReviewDate: '2026-11-30' },
-      { id: 'math_9', subject: 'math', part: 1, code: '№9', title: 'Прикладные задачи и вычисления по формулам', status: 'mastered', solvedCount: 40, correctCount: 39, mistakes: [], plannedReviewDate: '2026-12-02' },
-      { id: 'math_10', subject: 'math', part: 1, code: '№10', title: 'Текстовые задачи (движение, совместная работа, сплавы)', status: 'in_progress', solvedCount: 32, correctCount: 26, mistakes: ['Задачи на круговое движение'], plannedReviewDate: '2026-11-25' },
-      { id: 'math_11', subject: 'math', part: 1, code: '№11', title: 'Графики функций и определение коэффициентов', status: 'in_progress', solvedCount: 24, correctCount: 20, mistakes: ['Определение сдвига гиперболы'], plannedReviewDate: '2026-11-26' },
-      { id: 'math_12', subject: 'math', part: 1, code: '№12', title: 'Наибольшее и наименьшее значение функции с производной', status: 'mastered', solvedCount: 36, correctCount: 33, mistakes: [], plannedReviewDate: '2026-11-28' },
+      { id: 'math_1', subject: 'math', part: 1, code: '№1', title: 'Планиметрия (треугольники, четырехугольники, окружность)', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'math_2', subject: 'math', part: 1, code: '№2', title: 'Векторы и координаты на плоскости', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'math_3', subject: 'math', part: 1, code: '№3', title: 'Стереометрия базовые многогранники и тела вращения', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'math_4', subject: 'math', part: 1, code: '№4', title: 'Начала теории вероятностей (классическая)', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'math_5', subject: 'math', part: 1, code: '№5', title: 'Сложная вероятность, формулы Бернулли и Байеса', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'math_6', subject: 'math', part: 1, code: '№6', title: 'Простейшие уравнения (показательные, логарифмические, иррациональные)', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'math_7', subject: 'math', part: 1, code: '№7', title: 'Вычисления и тригонометрические преобразования', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'math_8', subject: 'math', part: 1, code: '№8', title: 'Производная, касательная и геометрический смысл', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'math_9', subject: 'math', part: 1, code: '№9', title: 'Прикладные задачи и вычисления по формулам', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'math_10', subject: 'math', part: 1, code: '№10', title: 'Текстовые задачи (движение, совместная работа, сплавы)', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'math_11', subject: 'math', part: 1, code: '№11', title: 'Графики функций и определение коэффициентов', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'math_12', subject: 'math', part: 1, code: '№12', title: 'Наибольшее и наименьшее значение функции с производной', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
       
-      // ВТОРАЯ ЧАСТЬ
-      { id: 'math_13', subject: 'math', part: 2, code: '№13', title: 'Уравнения: тригонометрия, замена переменной, отбор корней', status: 'in_progress', solvedCount: 35, correctCount: 28, mistakes: ['Отбор корней на тригонометрическом круге при ограничении ОДЗ'], plannedReviewDate: '2026-11-24' },
-      { id: 'math_14', subject: 'math', part: 2, code: '№14', title: 'Стереометрия: сечения, угол и расстояние между прямыми/плоскостями', status: 'in_progress', solvedCount: 16, correctCount: 10, mistakes: ['Метод координат в наклонных призмах'], plannedReviewDate: '2026-11-26' },
-      { id: 'math_15', subject: 'math', part: 2, code: '№15', title: 'Неравенства: метод рационализации, логарифмы, показательные', status: 'in_progress', solvedCount: 30, correctCount: 24, mistakes: ['Учет ОДЗ основания переменного логарифма'], plannedReviewDate: '2026-11-25' },
-      { id: 'math_16', subject: 'math', part: 2, code: '№16', title: 'Экономическая задача: аннуитетные и дифференцированные платежи, оптимизация', status: 'in_progress', solvedCount: 20, correctCount: 16, mistakes: ['Составление таблицы остатков долга'], plannedReviewDate: '2026-11-27' },
-      { id: 'math_17', subject: 'math', part: 2, code: '№17', title: 'Планиметрия сложная: теоремы Менелая, Чевы, вписанные углы', status: 'not_started', solvedCount: 8, correctCount: 4, mistakes: ['Построение вспомогательной окружности'], plannedReviewDate: '2026-11-29' },
-      { id: 'math_18', subject: 'math', part: 2, code: '№18', title: 'Задачи с параметром: графический и аналитический методы', status: 'in_progress', solvedCount: 15, correctCount: 9, mistakes: ['Раскрытие модулей в плоскости (x; a)'], plannedReviewDate: '2026-11-28' },
-      { id: 'math_19', subject: 'math', part: 2, code: '№19', title: 'Теория чисел: делимость, остатки, оценка плюс пример', status: 'in_progress', solvedCount: 14, correctCount: 10, mistakes: ['Пункт В: аккуратная оценка минимального значения'], plannedReviewDate: '2026-11-30' }
+      // ВТОРАЯ ЧАСТЬ (Задания 13-19)
+      { id: 'math_13', subject: 'math', part: 2, code: '№13', title: 'Уравнения: тригонометрия, замена переменной, отбор корней', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'math_14', subject: 'math', part: 2, code: '№14', title: 'Стереометрия: сечения, угол и расстояние между прямыми/плоскостями', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'math_15', subject: 'math', part: 2, code: '№15', title: 'Неравенства: метод рационализации, логарифмы, показательные', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'math_16', subject: 'math', part: 2, code: '№16', title: 'Экономическая задача: аннуитетные и дифференцированные платежи, оптимизация', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'math_17', subject: 'math', part: 2, code: '№17', title: 'Планиметрия сложная: теоремы Менелая, Чевы, вписанные углы', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'math_18', subject: 'math', part: 2, code: '№18', title: 'Задачи с параметром: графический и аналитический методы', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'math_19', subject: 'math', part: 2, code: '№19', title: 'Теория чисел: делимость, остатки, оценка плюс пример', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null }
     ];
 
-    // 2. Информатика
+    // 2. Информатика (КЕГЭ 1-27)
     const infoTopics = [
-      { id: 'inf_1', subject: 'informatics', part: 1, code: '№1', title: 'Анализ графов и весовых матриц', status: 'mastered', solvedCount: 30, correctCount: 29, mistakes: [], plannedReviewDate: '2026-11-27' },
-      { id: 'inf_2', subject: 'informatics', part: 1, code: '№2', title: 'Таблицы истинности логических функций в Python', status: 'mastered', solvedCount: 35, correctCount: 35, mistakes: [], plannedReviewDate: '2026-12-01' },
-      { id: 'inf_5', subject: 'informatics', part: 1, code: '№5', title: 'Анализ и синтез двоичных алгоритмов автоматов', status: 'mastered', solvedCount: 28, correctCount: 27, mistakes: [], plannedReviewDate: '2026-11-26' },
-      { id: 'inf_8', subject: 'informatics', part: 1, code: '№8', title: 'Комбинаторика и перестановки (itertools)', status: 'mastered', solvedCount: 34, correctCount: 32, mistakes: [], plannedReviewDate: '2026-11-28' },
-      { id: 'inf_9', subject: 'informatics', part: 1, code: '№9', title: 'Электронные таблицы и числовые последовательности', status: 'in_progress', solvedCount: 20, correctCount: 18, mistakes: ['Условия повторения чисел в строке Excel/Python'], plannedReviewDate: '2026-11-25' },
-      { id: 'inf_14', subject: 'informatics', part: 1, code: '№14', title: 'Позиционные системы счисления с переменным основанием', status: 'mastered', solvedCount: 32, correctCount: 31, mistakes: [], plannedReviewDate: '2026-11-29' },
-      { id: 'inf_15', subject: 'informatics', part: 1, code: '№15', title: 'Поразрядная конъюнкция, отрезки и делимость', status: 'in_progress', solvedCount: 26, correctCount: 22, mistakes: ['Отрезки: границы полуинтервалов'], plannedReviewDate: '2026-11-25' },
-      { id: 'inf_16', subject: 'informatics', part: 1, code: '№16', title: 'Вычисление значений рекурсивных функций (sys.setrecursionlimit)', status: 'mastered', solvedCount: 25, correctCount: 24, mistakes: [], plannedReviewDate: '2026-12-02' },
-      { id: 'inf_19_21', subject: 'informatics', part: 1, code: '№19-21', title: 'Теория игр: одна и две кучи камней (рекурсивный анализ)', status: 'in_progress', solvedCount: 36, correctCount: 30, mistakes: ['Отличие неудачного первого хода Вани от любого хода'], plannedReviewDate: '2026-11-26' },
-      { id: 'inf_24', subject: 'informatics', part: 1, code: '№24', title: 'Обработка символьных строк в файле на Python', status: 'in_progress', solvedCount: 22, correctCount: 17, mistakes: ['Динамическое окно и регулярные выражения'], plannedReviewDate: '2026-11-24' },
-      { id: 'inf_25', subject: 'informatics', part: 1, code: '№25', title: 'Теория чисел, маски и поиск делителей', status: 'in_progress', solvedCount: 24, correctCount: 21, mistakes: ['Эффективный поиск до sqrt(N)'], plannedReviewDate: '2026-11-26' },
-      { id: 'inf_26', subject: 'informatics', part: 1, code: '№26', title: 'Жадные алгоритмы, сортировка и обработка больших массивов', status: 'in_progress', solvedCount: 18, correctCount: 13, mistakes: ['Оптимальное расписание мероприятий'], plannedReviewDate: '2026-11-27' },
-      { id: 'inf_27', subject: 'informatics', part: 1, code: '№27', title: 'Анализ биоданных, кластеризация и центроиды', status: 'not_started', solvedCount: 8, correctCount: 4, mistakes: ['Алгоритм K-Means и вычисление расстояния'], plannedReviewDate: '2026-11-30' }
+      { id: 'inf_1', subject: 'informatics', part: 1, code: '№1', title: 'Анализ графов и весовых матриц', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'inf_2', subject: 'informatics', part: 1, code: '№2', title: 'Таблицы истинности логических функций в Python', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'inf_5', subject: 'informatics', part: 1, code: '№5', title: 'Анализ и синтез двоичных алгоритмов автоматов', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'inf_8', subject: 'informatics', part: 1, code: '№8', title: 'Комбинаторика и перестановки (itertools)', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'inf_9', subject: 'informatics', part: 1, code: '№9', title: 'Электронные таблицы и числовые последовательности', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'inf_14', subject: 'informatics', part: 1, code: '№14', title: 'Позиционные системы счисления с переменным основанием', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'inf_15', subject: 'informatics', part: 1, code: '№15', title: 'Поразрядная конъюнкция, отрезки и делимость', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'inf_16', subject: 'informatics', part: 1, code: '№16', title: 'Вычисление значений рекурсивных функций', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'inf_19_21', subject: 'informatics', part: 1, code: '№19-21', title: 'Теория игр: одна и две кучи камней (рекурсивный анализ)', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'inf_24', subject: 'informatics', part: 1, code: '№24', title: 'Обработка символьных строк в файле на Python', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'inf_25', subject: 'informatics', part: 1, code: '№25', title: 'Теория чисел, маски и поиск делителей', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'inf_26', subject: 'informatics', part: 1, code: '№26', title: 'Жадные алгоритмы, сортировка и обработка больших массивов', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'inf_27', subject: 'informatics', part: 1, code: '№27', title: 'Анализ биоданных, кластеризация и центроиды', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null }
     ];
 
     // 3. Русский язык
     const rusTopics = [
-      { id: 'rus_9_12', subject: 'russian', part: 1, code: '№9-12', title: 'Орфография: корни, приставки, суффиксы и личные окончания', status: 'in_progress', solvedCount: 45, correctCount: 38, mistakes: ['Спряжения глаголов-исключений (стелить, брить, клеить)'], plannedReviewDate: '2026-11-24' },
-      { id: 'rus_13_15', subject: 'russian', part: 1, code: '№13-15', title: 'Правописание НЕ/НИ, слитное/раздельное/дефисное, Н и НН', status: 'in_progress', solvedCount: 38, correctCount: 32, mistakes: ['Краткие причастия vs отглагольные прилагательные'], plannedReviewDate: '2026-11-25' },
-      { id: 'rus_7_8', subject: 'russian', part: 1, code: '№7-8', title: 'Грамматические нормы и синтаксические ошибки', status: 'mastered', solvedCount: 30, correctCount: 28, mistakes: ['Деепричастный оборот'], plannedReviewDate: '2026-11-29' },
-      { id: 'rus_16_21', subject: 'russian', part: 1, code: '№16-21', title: 'Пунктуация: сложносочиненные, сложноподчиненные, обособления, тире и двоеточие', status: 'in_progress', solvedCount: 40, correctCount: 33, mistakes: ['Задание 21: правила постановки тире'], plannedReviewDate: '2026-11-26' },
-      { id: 'rus_27', subject: 'russian', part: 2, code: '№27', title: 'Сочинение-рассуждение: формулировка проблемы, связка-анализ, позиция автора', status: 'in_progress', solvedCount: 6, correctCount: 5, mistakes: ['Логический переход между двумя иллюстрациями из текста'], plannedReviewDate: '2026-11-28' }
+      { id: 'rus_9_12', subject: 'russian', part: 1, code: '№9-12', title: 'Орфография: корни, приставки, суффиксы и личные окончания', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'rus_13_15', subject: 'russian', part: 1, code: '№13-15', title: 'Правописание НЕ/НИ, слитное/раздельное/дефисное, Н и НН', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'rus_7_8', subject: 'russian', part: 1, code: '№7-8', title: 'Грамматические нормы и синтаксические ошибки', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'rus_16_21', subject: 'russian', part: 1, code: '№16-21', title: 'Пунктуация: сложносочиненные, сложноподчиненные, обособления, тире и двоеточие', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null },
+      { id: 'rus_27', subject: 'russian', part: 2, code: '№27', title: 'Сочинение-рассуждение: формулировка проблемы, связка-анализ, позиция автора', status: 'not_started', solvedCount: 0, correctCount: 0, mistakes: [], plannedReviewDate: null }
     ];
 
     for (const t of [...mathTopics, ...infoTopics, ...rusTopics]) {
@@ -543,17 +529,17 @@ const Database = {
     }
   },
 
-  async seedOlympiads() {
+  async seedCleanOlympiads() {
     await this.saveOlympiad({
       id: 'oly_1',
       title: 'ВсОШ по информатике (Муниципальный этап)',
       subject: 'Информатика',
       stage: 'Муниципальный этап',
       date: '2026-12-05',
-      prepTasksCount: 40,
-      solvedCount: 28,
+      prepTasksCount: 30,
+      solvedCount: 0,
       targetPrize: 'Призёр / Победитель',
-      notes: 'Отработать динамическое программирование и графовые задачи',
+      notes: '',
       status: 'active'
     });
 
@@ -564,34 +550,76 @@ const Database = {
       stage: 'Муниципальный этап',
       date: '2026-12-14',
       prepTasksCount: 30,
-      solvedCount: 19,
+      solvedCount: 0,
       targetPrize: 'Призёр',
-      notes: 'Геометрия и теория чисел повышенного уровня',
+      notes: '',
       status: 'active'
     });
   },
 
-  async seedProjects() {
+  async seedCleanProjects() {
     await this.saveProject({
       id: 'proj_mirosborka',
       title: 'Миросборка',
-      description: 'Главный проект: Интеллектуальная система управления, автоматизации и прототипирования для предстоящего хакатона.',
-      deadline: '2026-11-27', // Хакатон 27 ноября 2026 года!
+      description: 'Проект для хакатона 27 ноября 2026 года.',
+      deadline: '2026-11-27',
       status: 'active',
       priority: 'active',
       isMain: true,
       stages: [
-        { name: 'Проектирование системной архитектуры', done: true },
-        { name: 'Разработка ядра и алгоритмического модуля', done: true },
+        { name: 'Проектирование системной архитектуры', done: false },
+        { name: 'Разработка прототипа ядра', done: false },
         { name: 'Сборка клиентского интерфейса и тестирование', done: false },
-        { name: 'Финальная полировка, питч и демонстрационный стенд', done: false }
+        { name: 'Финальная полировка, питч и демонстрация', done: false }
       ],
       tasks: [
-        { id: 'pt_1', text: 'Завершить модуль агрегации метрик', done: true },
-        { id: 'pt_2', text: 'Провести нагрузочное тестирование сценариев', done: false },
+        { id: 'pt_1', text: 'Подготовить каркас проекта', done: false },
+        { id: 'pt_2', text: 'Провести первичное тестирование сценариев', done: false },
         { id: 'pt_3', text: 'Подготовить презентационный слайд-дек к защите 27 ноября', done: false }
       ]
     });
+  },
+
+  /**
+   * Загрузка демонстрационных данных (Demo Mode)
+   */
+  async loadDemoData() {
+    const today = _TimeUtilsDB ? _TimeUtilsDB.getTodayStr() : new Date().toISOString().split('T')[0];
+    const tomorrow = _TimeUtilsDB ? _TimeUtilsDB.getTomorrowStr(today) : '2026-11-24';
+
+    // Демо-домашка
+    await this.addHomework({
+      id: 'demo_hw_1',
+      subject: 'Алгебра (профиль)',
+      title: 'Демо: Задания 13 и 15 (уравнения и неравенства)',
+      description: 'Отработка отбора корней и метода рационализации',
+      dueDate: tomorrow,
+      estimatedMinutes: 40,
+      actualMinutes: null,
+      difficulty: 3,
+      priority: 'high',
+      required: true,
+      status: 'pending',
+      createdAt: today
+    });
+
+    await this.addHomework({
+      id: 'demo_hw_2',
+      subject: 'Физика',
+      title: 'Демо: Законы сохранения импульса',
+      description: 'Задачи на упругие соударения',
+      dueDate: tomorrow,
+      estimatedMinutes: 30,
+      actualMinutes: null,
+      difficulty: 2,
+      priority: 'medium',
+      required: true,
+      status: 'pending',
+      createdAt: today
+    });
+
+    this.saveSettings({ isDemoMode: true });
+    return true;
   },
 
   // ==========================================
@@ -599,7 +627,7 @@ const Database = {
   // ==========================================
   async exportAllData() {
     const data = {
-      version: 1,
+      version: 1.1,
       exportedAt: new Date().toISOString(),
       settings: this.getSettings(),
       schedule_days: await this.getAll('schedule_days'),
@@ -671,7 +699,9 @@ const Database = {
   },
 
   async resetToDefaults() {
-    localStorage.removeItem(SETTINGS_KEY);
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(SETTINGS_KEY);
+    }
     await this.clearStore('schedule_days');
     await this.clearStore('homework');
     await this.clearStore('school_timetable');

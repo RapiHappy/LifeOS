@@ -1,21 +1,25 @@
 /**
  * LifeOS — Модуль системных уведомлений рабочего стола Windows (Web Notifications API)
  * Отправляет реальные всплывающие уведомления в правый нижний угол Windows через браузер.
+ * Работает при открытой вкладке браузера или через Service Worker.
+ * Интеграция с TimeUtils (Europe/Moscow).
  */
 
 const NotificationsManager = {
   checkIntervalId: null,
   sentNotifications: new Set(), // Защита от дублей: 'taskId_reminderType_date'
 
+  getTimeLib() {
+    return (typeof TimeUtils !== 'undefined') ? TimeUtils : (typeof globalThis !== 'undefined' && globalThis.TimeUtils ? globalThis.TimeUtils : null);
+  },
+
   /**
    * Инициализация менеджера уведомлений
    */
   init(db) {
     this.db = db;
-    // Запуск таймера проверки расписания каждые 20 секунд
     if (this.checkIntervalId) clearInterval(this.checkIntervalId);
     this.checkIntervalId = setInterval(() => this.checkScheduleAndNotify(), 20000);
-    // Проверка сразу при инициализации
     this.checkScheduleAndNotify();
   },
 
@@ -24,7 +28,7 @@ const NotificationsManager = {
    * @returns {'granted'|'denied'|'default'|'unsupported'}
    */
   getPermissionStatus() {
-    if (!('Notification' in window)) return 'unsupported';
+    if (typeof window === 'undefined' || !('Notification' in window)) return 'unsupported';
     return Notification.permission;
   },
 
@@ -32,7 +36,7 @@ const NotificationsManager = {
    * Запрос разрешения на отправку уведомлений
    */
   async requestPermission() {
-    if (!('Notification' in window)) {
+    if (typeof window === 'undefined' || !('Notification' in window)) {
       alert('Ваш браузер не поддерживает Web Notifications API.');
       return 'unsupported';
     }
@@ -51,6 +55,7 @@ const NotificationsManager = {
    */
   playChime() {
     try {
+      if (typeof window === 'undefined') return;
       const AudioContext = window.AudioContext || window.webkitAudioContext;
       if (!AudioContext) return;
       const ctx = new AudioContext();
@@ -108,14 +113,14 @@ const NotificationsManager = {
       const notif = new Notification(title, finalOptions);
 
       notif.onclick = () => {
-        window.focus();
+        if (typeof window !== 'undefined') window.focus();
         notif.close();
       };
 
       return notif;
     } catch (e) {
       console.warn('Notification constructor error (возможно ServiceWorker context):', e);
-      if (navigator.serviceWorker && navigator.serviceWorker.ready) {
+      if (typeof navigator !== 'undefined' && navigator.serviceWorker && navigator.serviceWorker.ready) {
         navigator.serviceWorker.ready.then(reg => {
           reg.showNotification(title, finalOptions);
         });
@@ -154,24 +159,26 @@ const NotificationsManager = {
     if (!this.db) return;
     if (this.getPermissionStatus() !== 'granted') return;
 
+    const timeLib = this.getTimeLib();
     const settings = this.db.getSettings();
-    const now = new Date();
-    const dateStr = now.toISOString().split('T')[0];
-    const currentMin = now.getHours() * 60 + now.getMinutes();
+    const dateStr = timeLib ? timeLib.getTodayStr() : new Date().toISOString().split('T')[0];
+    const currentMin = timeLib ? timeLib.getCurrentMinutesMoscow() : (new Date().getHours() * 60 + new Date().getMinutes());
 
     const schedule = await this.db.getDaySchedule(dateStr);
     if (!schedule || !schedule.tasks || schedule.tasks.length === 0) return;
 
     const advanceMin = Number(settings.notificationAdvance) || 10;
+    const timeToMin = (t) => {
+      if (timeLib) return timeLib.timeToMin(t);
+      const [h, m] = (t || '00:00').split(':').map(Number);
+      return h * 60 + m;
+    };
 
     for (const task of schedule.tasks) {
       if (task.status === 'completed' || task.status === 'skipped') continue;
 
-      const [startH, startM] = (task.startTime || '00:00').split(':').map(Number);
-      const taskStartMin = startH * 60 + startM;
-
-      const [endH, endM] = (task.endTime || '00:00').split(':').map(Number);
-      const taskEndMin = endH * 60 + endM;
+      const taskStartMin = timeToMin(task.startTime);
+      const taskEndMin = timeToMin(task.endTime);
 
       // 1. Напоминание за N минут до начала
       if (settings.notificationStart !== false) {
@@ -193,7 +200,7 @@ const NotificationsManager = {
           this.showNotification(title, { body, tag: advanceKey });
         }
 
-        // 2. Напоминание ровно в момент начала (окно в 1 минуту)
+        // 2. Напоминание ровно в момент начала
         const exactKey = `${task.id}_exact_${dateStr}`;
         if (currentMin === taskStartMin && !this.sentNotifications.has(exactKey)) {
           this.sentNotifications.add(exactKey);
@@ -210,9 +217,8 @@ const NotificationsManager = {
             body = 'Запланированный час отдыха. Приятной игры!';
           } else if (task.category === 'sport') {
             title = `🏃 Время спорта (25 минут)!`;
-            body = 'Разминка, турник или прогулка на свежем воздухе.';
+            body = 'Разминка, турник или упражнения для осанки.';
           } else if (task.category === 'rest') {
-            if (settings.notificationRest === false) continue;
             title = `🌿 Время отдыха без компьютера`;
             body = 'Отключите экраны, почитайте книгу или проведите время с семьёй.';
           }
@@ -240,4 +246,7 @@ const NotificationsManager = {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = NotificationsManager;
+}
+if (typeof globalThis !== 'undefined') {
+  globalThis.NotificationsManager = NotificationsManager;
 }

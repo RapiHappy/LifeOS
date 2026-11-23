@@ -2,10 +2,25 @@
  * LifeOS — Модуль домашних заданий (homework.js)
  * Управление списком ДЗ, расчёт нагрузки, фиксация фактического времени,
  * архив выполненных задач и авто-перепланирование дня.
+ * Интеграция с TimeUtils (Europe/Moscow).
  */
 
 const HomeworkManager = {
   activeFilter: 'all', // 'all' | 'tomorrow' | 'week' | 'completed'
+
+  getTimeLib() {
+    return (typeof TimeUtils !== 'undefined') ? TimeUtils : (typeof globalThis !== 'undefined' && globalThis.TimeUtils ? globalThis.TimeUtils : null);
+  },
+
+  getTodayString() {
+    const t = this.getTimeLib();
+    return t ? t.getTodayStr() : new Date().toISOString().split('T')[0];
+  },
+
+  getTomorrowString() {
+    const t = this.getTimeLib();
+    return t ? t.getTomorrowStr() : new Date(Date.now() + 86400000).toISOString().split('T')[0];
+  },
 
   init(db) {
     this.db = db;
@@ -22,12 +37,9 @@ const HomeworkManager = {
     if (!container) return;
 
     const allHw = await this.db.getAllHomework();
-    const today = new Date();
-    const todayStr = today.toISOString().split('T')[0];
-
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const tomorrowStr = tomorrow.toISOString().split('T')[0];
+    const todayStr = this.getTodayString();
+    const tomorrowStr = this.getTomorrowString();
+    const timeLib = this.getTimeLib();
 
     // Анализ метрик
     const activeTasks = allHw.filter(h => h.status !== 'completed');
@@ -62,12 +74,9 @@ const HomeworkManager = {
     } else if (this.activeFilter === 'tomorrow') {
       displayList = activeTasks.filter(h => h.dueDate === tomorrowStr);
     } else if (this.activeFilter === 'week') {
-      const nextWeek = new Date(today);
-      nextWeek.setDate(nextWeek.getDate() + 7);
-      const nextWeekStr = nextWeek.toISOString().split('T')[0];
+      const nextWeekStr = timeLib ? timeLib.addDays(todayStr, 7) : new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0];
       displayList = activeTasks.filter(h => h.dueDate >= todayStr && h.dueDate <= nextWeekStr);
     } else {
-      // 'all'
       displayList = activeTasks;
     }
 
@@ -187,34 +196,31 @@ const HomeworkManager = {
     const hw = await this.db.get('homework', id);
     if (!hw) return;
 
+    const todayStr = this.getTodayString();
+
     if (hw.status === 'completed') {
-      // Возвращаем в активные
       hw.status = 'pending';
       hw.completedAt = null;
       hw.actualMinutes = null;
     } else {
-      // Завершаем с дефолтным временем
       hw.status = 'completed';
       hw.completedAt = new Date().toISOString();
       hw.actualMinutes = hw.actualMinutes || hw.estimatedMinutes || 30;
 
-      // Логируем активность для статистики
       await this.db.logActivity({
         category: 'homework',
         title: `ДЗ: ${hw.subject} (${hw.title})`,
         durationMinutes: hw.actualMinutes,
-        date: new Date().toISOString().split('T')[0]
+        date: todayStr
       });
     }
 
     await this.db.updateHomework(hw);
 
-    // Автоматическое перепланирование сегодняшнего дня
-    const todayStr = new Date().toISOString().split('T')[0];
     await AIPlanner.autoReplan(todayStr, this.db, 'Отметка выполнения домашнего задания');
 
     this.render();
-    if (window.App) window.App.refreshCurrentView();
+    if (window.App && typeof window.App.refreshCurrentView === 'function') window.App.refreshCurrentView();
   },
 
   openCompleteModal(id) {
@@ -258,6 +264,7 @@ const HomeworkManager = {
 
     const actualInput = document.getElementById('actual-minutes-input');
     const actual = Number(actualInput ? actualInput.value : hw.estimatedMinutes) || 30;
+    const todayStr = this.getTodayString();
 
     hw.status = 'completed';
     hw.completedAt = new Date().toISOString();
@@ -265,34 +272,31 @@ const HomeworkManager = {
 
     await this.db.updateHomework(hw);
 
-    // Логируем в статистику
     await this.db.logActivity({
       category: 'homework',
       title: `ДЗ: ${hw.subject} (${hw.title})`,
       durationMinutes: actual,
-      date: new Date().toISOString().split('T')[0]
+      date: todayStr
     });
 
     const modal = document.getElementById('hw-complete-modal');
     if (modal) modal.remove();
 
-    // Перепланирование
-    const todayStr = new Date().toISOString().split('T')[0];
     await AIPlanner.autoReplan(todayStr, this.db, 'Завершение ДЗ с фактическим временем');
 
     this.render();
-    if (window.App) window.App.refreshCurrentView();
+    if (window.App && typeof window.App.refreshCurrentView === 'function') window.App.refreshCurrentView();
   },
 
   async deleteHw(id) {
     if (!confirm('Удалить это домашнее задание?')) return;
     await this.db.deleteHomework(id);
 
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = this.getTodayString();
     await AIPlanner.autoReplan(todayStr, this.db, 'Удаление домашнего задания');
 
     this.render();
-    if (window.App) window.App.refreshCurrentView();
+    if (window.App && typeof window.App.refreshCurrentView === 'function') window.App.refreshCurrentView();
   },
 
   openAddModal() {
@@ -316,9 +320,7 @@ const HomeworkManager = {
       document.body.appendChild(modal);
     }
 
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const defaultDueDate = tomorrow.toISOString().split('T')[0];
+    const defaultDueDate = this.getTomorrowString();
 
     const subjects = [
       'Алгебра (профиль)', 'Геометрия (профиль)', 'Информатика', 'Физика',
@@ -422,15 +424,17 @@ const HomeworkManager = {
     const modal = document.getElementById('hw-form-modal');
     if (modal) modal.remove();
 
-    // Авто-перепланирование сегодняшнего дня без подтверждения
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = this.getTodayString();
     await AIPlanner.autoReplan(todayStr, this.db, editId ? 'Редактирование ДЗ' : 'Добавление нового ДЗ');
 
     this.render();
-    if (window.App) window.App.refreshCurrentView();
+    if (window.App && typeof window.App.refreshCurrentView === 'function') window.App.refreshCurrentView();
   }
 };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = HomeworkManager;
+}
+if (typeof globalThis !== 'undefined') {
+  globalThis.HomeworkManager = HomeworkManager;
 }

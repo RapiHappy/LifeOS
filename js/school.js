@@ -2,24 +2,38 @@
  * LifeOS — Модуль школьного расписания (school.js)
  * Управление уроками с 1 по 6 дни недели, поддержка 8-х уроков (Вт/Чт),
  * контрольных работ, отменённых занятий и автоматического пересчёта расписания.
+ * Интеграция с TimeUtils (Europe/Moscow).
  */
 
 const SchoolManager = {
   currentDayTab: 1, // 1-Пн по умолчанию
   daysNames: [
-    { id: 1, name: 'Понедельник', short: 'ПН', lessonsCount: 7 },
+    { id: 1, name: 'Понедельник', short: 'ПН', lessonsCount: 6 },
     { id: 2, name: 'Вторник', short: 'ВТ', lessonsCount: 8, has8th: true },
-    { id: 3, name: 'Среда', short: 'СР', lessonsCount: 7 },
+    { id: 3, name: 'Среда', short: 'СР', lessonsCount: 6 },
     { id: 4, name: 'Четверг', short: 'ЧТ', lessonsCount: 8, has8th: true },
-    { id: 5, name: 'Пятница', short: 'ПТ', lessonsCount: 7 },
-    { id: 6, name: 'Суббота', short: 'СБ', lessonsCount: 5 }
+    { id: 5, name: 'Пятница', short: 'ПТ', lessonsCount: 6 },
+    { id: 6, name: 'Суббота', short: 'СБ', lessonsCount: 4 }
   ],
+
+  getTodayString() {
+    const timeLib = (typeof TimeUtils !== 'undefined') ? TimeUtils : (typeof globalThis !== 'undefined' && globalThis.TimeUtils ? globalThis.TimeUtils : null);
+    return timeLib ? timeLib.getTodayStr() : new Date().toISOString().split('T')[0];
+  },
+
+  getCurrentDayOfWeek() {
+    const timeLib = (typeof TimeUtils !== 'undefined') ? TimeUtils : (typeof globalThis !== 'undefined' && globalThis.TimeUtils ? globalThis.TimeUtils : null);
+    if (timeLib) {
+      return timeLib.getDayOfWeek(timeLib.getTodayStr());
+    }
+    const d = new Date().getDay();
+    return d === 0 ? 7 : d;
+  },
 
   init(db) {
     this.db = db;
-    // Определим текущий день недели (если пн-сб, открываем его)
-    const todayJs = new Date().getDay();
-    this.currentDayTab = (todayJs >= 1 && todayJs <= 6) ? todayJs : 1;
+    const currentDow = this.getCurrentDayOfWeek();
+    this.currentDayTab = (currentDow >= 1 && currentDow <= 6) ? currentDow : 1;
     this.render();
   },
 
@@ -34,7 +48,7 @@ const SchoolManager = {
 
     const timetable = await this.db.getSchoolTimetable();
     const dayData = timetable.find(t => t.dayOfWeek === this.currentDayTab) || { dayOfWeek: this.currentDayTab, lessons: [] };
-    const currentDayMeta = this.daysNames.find(d => d.id === this.currentDayTab);
+    const currentDayMeta = this.daysNames.find(d => d.id === this.currentDayTab) || this.daysNames[0];
 
     // Подсчет окончания занятий
     let lastTime = '—';
@@ -48,8 +62,8 @@ const SchoolManager = {
     let html = `
       <div class="school-header-card">
         <div class="school-header-info">
-          <h2>Школьное расписание</h2>
-          <p class="text-muted">Настройка уроков на каждый день. Во вторник и четверг предусмотрен 8-й урок с автоматическим сдвигом времени возвращения домой.</p>
+          <h2>Школьное расписание 10 класса</h2>
+          <p class="text-muted">Реальное расписание уроков. Во вторник и четверг предусмотрен 8-й урок (до 15:30) с автоматической адаптацией дороги домой и обеда.</p>
         </div>
         <div class="school-day-badge">
           <span>Окончание школы: <strong>${lastTime}</strong></span>
@@ -142,13 +156,12 @@ const SchoolManager = {
 
     dayData.lessons[index].isCanceled = !dayData.lessons[index].isCanceled;
     await this.db.saveDayTimetable(this.currentDayTab, dayData.lessons);
-    
-    // Перепланирование текущего дня
-    const todayStr = new Date().toISOString().split('T')[0];
+
+    const todayStr = this.getTodayString();
     await AIPlanner.autoReplan(todayStr, this.db, 'Изменение статуса урока');
-    
+
     this.render();
-    if (window.App) window.App.refreshCurrentView();
+    if (window.App && typeof window.App.refreshCurrentView === 'function') window.App.refreshCurrentView();
   },
 
   async toggleTestLesson(index) {
@@ -159,11 +172,11 @@ const SchoolManager = {
     dayData.lessons[index].isTest = !dayData.lessons[index].isTest;
     await this.db.saveDayTimetable(this.currentDayTab, dayData.lessons);
 
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = this.getTodayString();
     await AIPlanner.autoReplan(todayStr, this.db, 'Отметка контрольной работы');
 
     this.render();
-    if (window.App) window.App.refreshCurrentView();
+    if (window.App && typeof window.App.refreshCurrentView === 'function') window.App.refreshCurrentView();
   },
 
   async deleteLesson(index) {
@@ -175,11 +188,11 @@ const SchoolManager = {
     dayData.lessons.splice(index, 1);
     await this.db.saveDayTimetable(this.currentDayTab, dayData.lessons);
 
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = this.getTodayString();
     await AIPlanner.autoReplan(todayStr, this.db, 'Удаление урока из расписания');
 
     this.render();
-    if (window.App) window.App.refreshCurrentView();
+    if (window.App && typeof window.App.refreshCurrentView === 'function') window.App.refreshCurrentView();
   },
 
   openAddLessonModal() {
@@ -226,7 +239,7 @@ const SchoolManager = {
             </div>
             <div class="form-group col">
               <label>Кабинет</label>
-              <input type="text" id="lesson-room-input" class="form-control" value="${lessonData ? lessonData.room || '' : ''}" placeholder="204">
+              <input type="text" id="lesson-room-input" class="form-control" value="${lessonData ? (lessonData.room || '') : ''}" placeholder="204">
             </div>
           </div>
 
@@ -243,13 +256,13 @@ const SchoolManager = {
 
           <div class="form-group">
             <label>Заметки / Домашнее задание</label>
-            <input type="text" id="lesson-notes-input" class="form-control" value="${lessonData ? lessonData.notes || '' : ''}" placeholder="Параграф 14, номера 3-5">
+            <input type="text" id="lesson-notes-input" class="form-control" value="${lessonData ? (lessonData.notes || '') : ''}" placeholder="Параграф 14, номера 3-5">
           </div>
 
           <div class="form-checkbox-row">
             <label class="checkbox-label">
               <input type="checkbox" id="lesson-extra-input" ${lessonData && lessonData.isExtra ? 'checked' : ''}>
-              <span>Это 8-й урок / факультатив (смещает окончание школы)</span>
+              <span>Это 8-й урок / факультатив (смещает окончание школы до 15:30)</span>
             </label>
           </div>
 
@@ -277,6 +290,9 @@ const SchoolManager = {
       dayData = { dayOfWeek: this.currentDayTab, lessons: [] };
     }
 
+    const timeLib = (typeof TimeUtils !== 'undefined') ? TimeUtils : (typeof globalThis !== 'undefined' && globalThis.TimeUtils ? globalThis.TimeUtils : null);
+    const toMin = (t) => timeLib ? timeLib.timeToMin(t) : ((h, m) => h * 60 + m)(...t.split(':').map(Number));
+
     const newLesson = {
       lessonNumber: Number(document.getElementById('lesson-num-input').value) || 1,
       subject: document.getElementById('lesson-subject-input').value.trim(),
@@ -296,7 +312,7 @@ const SchoolManager = {
     }
 
     // Сортировка по времени начала
-    dayData.lessons.sort((a, b) => Scheduler.timeToMin(a.startTime) - Scheduler.timeToMin(b.startTime));
+    dayData.lessons.sort((a, b) => toMin(a.startTime) - toMin(b.startTime));
 
     await this.db.saveDayTimetable(this.currentDayTab, dayData.lessons);
 
@@ -304,14 +320,17 @@ const SchoolManager = {
     if (modal) modal.remove();
 
     // Автоматическое перепланирование сегодняшнего дня
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = this.getTodayString();
     await AIPlanner.autoReplan(todayStr, this.db, 'Редактирование расписания уроков');
 
     this.render();
-    if (window.App) window.App.refreshCurrentView();
+    if (window.App && typeof window.App.refreshCurrentView === 'function') window.App.refreshCurrentView();
   }
 };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = SchoolManager;
+}
+if (typeof globalThis !== 'undefined') {
+  globalThis.SchoolManager = SchoolManager;
 }

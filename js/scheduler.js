@@ -1,12 +1,23 @@
 /**
- * LifeOS — Интеллектуальный планировщик расписания (Scheduler)
+ * LifeOS — Интеллектуальный планировщик расписания (Scheduler v1.1)
  * Отвечает за бесконфликтное распределение школьных уроков, ДЗ, ЕГЭ,
  * олимпиад, проектов и гарантированных защищённых блоков.
+ * Исправлена проблема потери времени задач при нехватке слота (поддержка разбиения на части).
  */
+
+// Поддержка TimeUtils как в браузере, так и в Node.js
+const _TimeUtilsScheduler = (typeof globalThis !== 'undefined' && typeof globalThis.TimeUtils !== 'undefined')
+  ? globalThis.TimeUtils
+  : (typeof require !== 'undefined' ? require('./time.js') : null);
+
+const _PrayerManagerScheduler = (typeof globalThis !== 'undefined' && typeof globalThis.PrayerManager !== 'undefined')
+  ? globalThis.PrayerManager
+  : (typeof require !== 'undefined' ? require('./prayer.js') : null);
 
 const Scheduler = {
   // Минуты в формат "HH:MM"
   minToTime(mins) {
+    if (_TimeUtilsScheduler) return _TimeUtilsScheduler.minToTime(mins);
     const h = Math.floor(mins / 60) % 24;
     const m = mins % 60;
     return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
@@ -14,6 +25,7 @@ const Scheduler = {
 
   // "HH:MM" в минуты
   timeToMin(timeStr) {
+    if (_TimeUtilsScheduler) return _TimeUtilsScheduler.timeToMin(timeStr);
     if (!timeStr) return 0;
     const [h, m] = timeStr.split(':').map(Number);
     return (h || 0) * 60 + (m || 0);
@@ -28,7 +40,7 @@ const Scheduler = {
    * @param {Object} settings
    * @returns {{ mode: 'normal'|'loaded'|'competitive', reason: string }}
    */
-  detectMode(dateStr, homeworkList, projectsList, olympiadsList, settings) {
+  detectMode(dateStr, homeworkList = [], projectsList = [], olympiadsList = [], settings = {}) {
     // 1. Ручной выбор режима в настройках имеет приоритет, если не 'auto'
     if (settings.activeMode && settings.activeMode !== 'auto') {
       const modeNames = {
@@ -42,14 +54,13 @@ const Scheduler = {
       };
     }
 
-    const targetDate = new Date(dateStr);
-    const dayOfWeek = targetDate.getDay(); // 0-вс, 1-пн, ...
-
     // 2. Проверка на Соревновательный режим (хакатон или олимпиада в ближайшие 7 дней)
     const activeProject = projectsList.find(p => p.priority === 'active' || p.isMain);
     if (activeProject && activeProject.deadline) {
-      const deadlineDate = new Date(activeProject.deadline);
-      const diffDays = Math.ceil((deadlineDate - targetDate) / (1000 * 60 * 60 * 24));
+      const diffDays = _TimeUtilsScheduler
+        ? _TimeUtilsScheduler.diffDays(activeProject.deadline, dateStr)
+        : Math.ceil((new Date(activeProject.deadline) - new Date(dateStr)) / (1000 * 60 * 60 * 24));
+
       if (diffDays >= 0 && diffDays <= 7) {
         return {
           mode: 'competitive',
@@ -61,8 +72,9 @@ const Scheduler = {
     // Проверка олимпиад
     const upcomingOly = olympiadsList.find(o => {
       if (!o.date) return false;
-      const olyDate = new Date(o.date);
-      const diff = Math.ceil((olyDate - targetDate) / (1000 * 60 * 60 * 24));
+      const diff = _TimeUtilsScheduler
+        ? _TimeUtilsScheduler.diffDays(o.date, dateStr)
+        : Math.ceil((new Date(o.date) - new Date(dateStr)) / (1000 * 60 * 60 * 24));
       return diff >= 0 && diff <= 5;
     });
     if (upcomingOly) {
@@ -73,22 +85,21 @@ const Scheduler = {
     }
 
     // 3. Проверка на Загруженный режим (много домашки на завтра/сегодня или контрольные)
-    // Вычисляем суммарное время невыполненных ДЗ со сроком сегодня или завтра
-    const tomorrow = new Date(targetDate);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const tomorrowStr = tomorrow.toISOString().split('T')[0];
+    const tomorrowStr = _TimeUtilsScheduler
+      ? _TimeUtilsScheduler.getTomorrowStr(dateStr)
+      : new Date(new Date(dateStr).getTime() + 86400000).toISOString().split('T')[0];
 
     let urgentHwMinutes = 0;
     homeworkList.forEach(hw => {
-      if (hw.status !== 'completed' && (hw.dueDate === dateStr || hw.dueDate === tomorrowStr)) {
-        urgentHwMinutes += (hw.estimatedMinutes || 30);
+      if (hw.status !== 'completed' && (hw.dueDate === dateStr || hw.dueDate === tomorrowStr || hw.dueDate < dateStr)) {
+        urgentHwMinutes += (Number(hw.estimatedMinutes) || 30);
       }
     });
 
     if (urgentHwMinutes >= 120) {
       return {
         mode: 'loaded',
-        reason: `Высокая учебная нагрузка: суммарное ДЗ составляет ${urgentHwMinutes} мин. Приоритет обязательным предметам, необязательные активности сокращены.`
+        reason: `Высокая учебная нагрузка: срочное ДЗ составляет ${urgentHwMinutes} мин. Приоритет обязательным предметам на завтра, необязательные активности перенесены.`
       };
     }
 
@@ -113,10 +124,9 @@ const Scheduler = {
     const olympiads = await db.getOlympiads();
     const egeTopics = await db.getEgeTopics();
 
-    const date = new Date(dateStr + 'T12:00:00');
-    // JS: 0-Sun, 1-Mon, ..., 6-Sat
-    const jsDay = date.getDay();
-    const dayOfWeek = jsDay === 0 ? 7 : jsDay; // 1-пн ... 6-сб, 7-вс
+    const dayOfWeek = _TimeUtilsScheduler
+      ? _TimeUtilsScheduler.getDayOfWeek(dateStr)
+      : (new Date(dateStr + 'T12:00:00').getDay() === 0 ? 7 : new Date(dateStr + 'T12:00:00').getDay());
 
     // Определение режима
     const modeInfo = this.detectMode(dateStr, homework, projects, olympiads, settings);
@@ -134,13 +144,13 @@ const Scheduler = {
       occupiedIntervals.sort((a, b) => a.start - b.start);
     }
 
-    // 1. Утренний блок (Подъем, зарядка, завтрак, сборы)
+    // 1. Утренний блок (Подъем, зарядка, завтрак, сборы) — 90 минут
     tasks.push({
       id: `morning_${dateStr}`,
       title: 'Утренний подъем и сборы',
       subtitle: 'Зарядка, завтрак, подготовка к школе',
       startTime: this.minToTime(wakeMin),
-      endTime: this.minToTime(wakeMin + 90), // 06:00 - 07:30
+      endTime: this.minToTime(wakeMin + 90),
       durationMinutes: 90,
       category: 'routine',
       status: 'pending',
@@ -150,61 +160,71 @@ const Scheduler = {
     markOccupied(wakeMin, wakeMin + 90, 'morning');
 
     // 2. Школьные уроки из расписания
-    let schoolEndMin = wakeMin + 90; // по умолчанию если нет школы
+    let schoolEndMin = wakeMin + 90;
     const dayTimetable = timetable.find(t => t.dayOfWeek === dayOfWeek);
 
     let has8thLesson = false;
+    let actualLessonsCount = 0;
+
     if (dayTimetable && dayTimetable.lessons && dayTimetable.lessons.length > 0) {
       const activeLessons = dayTimetable.lessons.filter(l => !l.isCanceled);
-      
-      // Дорога в школу перед первым уроком
-      const firstLesson = activeLessons[0];
-      if (firstLesson) {
-        const firstStart = this.timeToMin(firstLesson.startTime);
-        tasks.push({
-          id: `road_to_school_${dateStr}`,
-          title: 'Дорога в школу',
-          subtitle: 'Прогулка до школы, подготовка к 1 уроку',
-          startTime: this.minToTime(firstStart - 25),
-          endTime: firstLesson.startTime,
-          durationMinutes: 25,
-          category: 'school',
-          status: 'pending',
-          isProtected: true
-        });
-        markOccupied(firstStart - 25, firstStart, 'road_to_school');
-      }
+      actualLessonsCount = activeLessons.length;
 
-      // Добавление каждого урока в расписание
-      activeLessons.forEach(lesson => {
-        const start = this.timeToMin(lesson.startTime);
-        const end = this.timeToMin(lesson.endTime);
-        if (lesson.lessonNumber === 8 || lesson.isExtra) {
-          has8thLesson = true;
+      if (activeLessons.length > 0) {
+        // Дорога в школу перед первым уроком (25 минут)
+        const firstLesson = activeLessons[0];
+        const firstStart = this.timeToMin(firstLesson.startTime);
+        const roadStart = Math.max(wakeMin + 90, firstStart - 25);
+
+        if (firstStart > roadStart) {
+          tasks.push({
+            id: `road_to_school_${dateStr}`,
+            title: 'Дорога в школу',
+            subtitle: 'Прогулка до школы, подготовка к 1 уроку',
+            startTime: this.minToTime(roadStart),
+            endTime: firstLesson.startTime,
+            durationMinutes: firstStart - roadStart,
+            category: 'school',
+            status: 'pending',
+            isProtected: true
+          });
+          markOccupied(roadStart, firstStart, 'road_to_school');
         }
 
-        tasks.push({
-          id: `lesson_${dayOfWeek}_${lesson.lessonNumber}_${dateStr}`,
-          title: `${lesson.lessonNumber}. ${lesson.subject}`,
-          subtitle: `Кабинет ${lesson.room || '—'}${lesson.isExtra ? ' (8-й урок)' : ''}`,
-          startTime: lesson.startTime,
-          endTime: lesson.endTime,
-          durationMinutes: end - start,
-          category: 'school',
-          status: 'pending',
-          isProtected: true,
-          room: lesson.room,
-          notes: lesson.notes || '',
-          isExtra: !!lesson.isExtra
+        // Добавление каждого урока в расписание
+        activeLessons.forEach(lesson => {
+          const start = this.timeToMin(lesson.startTime);
+          const end = this.timeToMin(lesson.endTime);
+          if (lesson.lessonNumber === 8 || lesson.isExtra) {
+            has8thLesson = true;
+          }
+
+          tasks.push({
+            id: `lesson_${dayOfWeek}_${lesson.lessonNumber}_${dateStr}`,
+            title: `${lesson.lessonNumber}. ${lesson.subject}`,
+            subtitle: `Кабинет ${lesson.room || '—'}${lesson.isExtra ? ' (8-й урок)' : ''}`,
+            startTime: lesson.startTime,
+            endTime: lesson.endTime,
+            durationMinutes: end - start,
+            category: 'school',
+            status: 'pending',
+            isProtected: true,
+            room: lesson.room || '',
+            notes: lesson.notes || '',
+            isExtra: !!lesson.isExtra
+          });
+          markOccupied(start, end, `lesson_${lesson.lessonNumber}`);
+          schoolEndMin = Math.max(schoolEndMin, end);
         });
-        markOccupied(start, end, `lesson_${lesson.lessonNumber}`);
-        schoolEndMin = Math.max(schoolEndMin, end);
-      });
+      }
     }
 
-    // 3. Возвращение домой и обед (35-40 минут после последнего урока)
-    if (schoolEndMin > wakeMin + 90) {
-      const lunchDuration = settings.lunchMinutes || 40;
+    // 3. Возвращение домой и обед
+    let actualSchoolEndMin = schoolEndMin;
+    let freeTimeStartMin = schoolEndMin;
+
+    if (actualLessonsCount > 0 && schoolEndMin > wakeMin + 90) {
+      const lunchDuration = Number(settings.lunchMinutes) || 40;
       const lunchEndMin = schoolEndMin + lunchDuration;
       tasks.push({
         id: `road_home_lunch_${dateStr}`,
@@ -219,33 +239,54 @@ const Scheduler = {
         description: 'Дорога домой, горячий обед, переключение внимания.'
       });
       markOccupied(schoolEndMin, lunchEndMin, 'lunch');
-      schoolEndMin = lunchEndMin;
-    } else if (dayOfWeek === 7) {
-      // Воскресенье — свободный день: спокойное утро и обед
-      schoolEndMin = this.timeToMin('13:00');
+      freeTimeStartMin = lunchEndMin;
+    } else if (dayOfWeek === 7 || actualLessonsCount === 0) {
+      // Воскресенье или день без уроков
+      actualSchoolEndMin = this.timeToMin('13:00');
+      freeTimeStartMin = actualSchoolEndMin;
     }
 
     // 4. ЗАЩИЩЁННЫЙ БЛОК: Намаз Ясту (Иша)
-    const yastuBlock = PrayerManager.getYastuScheduleBlock(dateStr, settings);
+    const yastuBlock = _PrayerManagerScheduler
+      ? _PrayerManagerScheduler.getYastuScheduleBlock(dateStr, settings)
+      : {
+          id: `prayer_yastu_${dateStr}`,
+          title: 'Намаз ясту',
+          startTime: '17:00',
+          endTime: '17:20',
+          durationMinutes: 20,
+          category: 'prayer',
+          status: 'pending',
+          isProtected: true
+        };
+
     const yastuStartMin = this.timeToMin(yastuBlock.startTime);
     const yastuEndMin = this.timeToMin(yastuBlock.endTime);
     tasks.push(yastuBlock);
     markOccupied(yastuStartMin, yastuEndMin, 'yastu');
 
     // 5. ЗАЩИЩЁННЫЕ БЛОКИ ВТОРОЙ ПОЛОВИНЫ ДНЯ:
-    // - Игры на ПК: 60 минут (запланированный блок, не награда!)
-    // - Спорт: 25 минут
-    // - Семья: 30 минут (ужин с родителями)
-    // - Отдых без ПК: 45 минут перед сном
-    // - Сон: 21:30 - 06:00
+    const gameDuration = Number(settings.gameMinutes) || 60;
+    const sportDuration = Number(settings.sportMinutes) || 25;
+    const familyDuration = Number(settings.familyMinutes) || 30;
+    const offlineRestDuration = Number(settings.offlineRestMinutes) || 45;
 
-    const gameDuration = settings.gameMinutes || 60;
-    const sportDuration = settings.sportMinutes || 25;
-    const familyDuration = settings.familyMinutes || 30;
-    const offlineRestDuration = settings.offlineRestMinutes || 45;
+    // Сон: 21:30 - 06:00
+    tasks.push({
+      id: `sleep_${dateStr}`,
+      title: 'Сон и восстановление (8ч 30мин)',
+      subtitle: `Отбой в ${settings.sleepStart || '21:30'}, подъём в ${settings.wakeTime || '06:00'}`,
+      startTime: this.minToTime(sleepMin),
+      endTime: settings.wakeTime || '06:00',
+      durationMinutes: 510,
+      category: 'sleep',
+      status: 'pending',
+      isProtected: true,
+      description: 'Строго охраняемый физиологический сон для высокой продуктивности.'
+    });
 
-    // Отдых без ПК фиксируем перед сном: (sleepMin - offlineRestDuration) до sleepMin
-    const restStartMin = sleepMin - offlineRestDuration; // 20:45 - 21:30
+    // Отдых без ПК перед сном: (sleepMin - offlineRestDuration) .. sleepMin (20:45 - 21:30)
+    const restStartMin = sleepMin - offlineRestDuration;
     tasks.push({
       id: `offline_rest_${dateStr}`,
       title: 'Отдых без компьютера',
@@ -260,26 +301,12 @@ const Scheduler = {
     });
     markOccupied(restStartMin, sleepMin, 'offline_rest');
 
-    // Сон: 21:30 - 06:00
-    tasks.push({
-      id: `sleep_${dateStr}`,
-      title: 'Сон и восстановление (8ч 30мин)',
-      subtitle: 'Отбой в 21:30, подъём в 06:00',
-      startTime: this.minToTime(sleepMin),
-      endTime: settings.wakeTime || '06:00',
-      durationMinutes: 510,
-      category: 'sleep',
-      status: 'pending',
-      isProtected: true,
-      description: 'Строго охраняемый физиологический сон для высокой продуктивности.'
-    });
-
-    // Игры на ПК: 60 минут (обычно ставим перед отдыхом без ПК, напр. 19:40 - 20:40)
-    const gameStartMin = restStartMin - gameDuration; // 19:45 - 20:45
+    // Игры на ПК: 60 минут (19:45 - 20:45)
+    const gameStartMin = restStartMin - gameDuration;
     tasks.push({
       id: `pc_games_${dateStr}`,
       title: 'Игры на ПК',
-      subtitle: 'Запланированное игровое время (60 мин)',
+      subtitle: `Запланированное игровое время (${gameDuration} мин)`,
       startTime: this.minToTime(gameStartMin),
       endTime: this.minToTime(restStartMin),
       durationMinutes: gameDuration,
@@ -290,8 +317,8 @@ const Scheduler = {
     });
     markOccupied(gameStartMin, restStartMin, 'gaming');
 
-    // Семейное время (ужин с родителями): 30 мин (напр. перед играми: 19:15 - 19:45)
-    const familyStartMin = gameStartMin - familyDuration; // 19:15 - 19:45
+    // Семейное время (ужин с родителями): 30 мин (19:15 - 19:45)
+    const familyStartMin = gameStartMin - familyDuration;
     tasks.push({
       id: `family_dinner_${dateStr}`,
       title: 'Ужин с родителями и семейное время',
@@ -306,12 +333,17 @@ const Scheduler = {
     });
     markOccupied(familyStartMin, gameStartMin, 'family');
 
-    // Спорт (25 минут): размещаем либо до ясту, либо сразу после ясту
-    // Проверим, где есть красивое окно
+    // Спорт (25 минут): размещаем в свободное окно, избегая наложения на ясту
     let sportStartMin = yastuEndMin + 10;
     if (sportStartMin + sportDuration > familyStartMin) {
       sportStartMin = familyStartMin - sportDuration - 10;
     }
+    // Если накладывается на ясту, смещаем до намаза
+    if (sportStartMin < yastuEndMin && (sportStartMin + sportDuration) > yastuStartMin) {
+      sportStartMin = yastuStartMin - sportDuration - 10;
+    }
+    sportStartMin = Math.max(freeTimeStartMin + 10, sportStartMin);
+
     tasks.push({
       id: `sport_${dateStr}`,
       title: 'Спорт и физическая активность',
@@ -326,12 +358,11 @@ const Scheduler = {
     });
     markOccupied(sportStartMin, sportStartMin + sportDuration, 'sport');
 
-    // 6. РАСПРЕДЕЛЕНИЕ УЧЕБНЫХ И ПРОДУКТИВНЫХ ЗАДАЧ В СВОБОДНЫЕ ОКНА
-    // Вычисляем свободные окна между schoolEndMin и familyStartMin
-    const freeSlots = [];
-    let curPointer = schoolEndMin;
-
+    // 6. ВЫЧИСЛЕНИЕ СВОБОДНЫХ ОКОН ДЛЯ УЧЁБЫ И ПРОЕКТОВ
     occupiedIntervals.sort((a, b) => a.start - b.start);
+    const freeSlots = [];
+    let curPointer = freeTimeStartMin;
+
     for (const occ of occupiedIntervals) {
       if (occ.start > curPointer && occ.start <= familyStartMin) {
         const gap = occ.start - curPointer;
@@ -350,21 +381,34 @@ const Scheduler = {
       }
     }
 
-    // Собираем кандидатов на размещение по приоритетам в зависимости от режима:
-    const tasksToSchedule = [];
+    // 7. СБОР КАНДИДАТОВ НА РАЗМЕЩЕНИЕ (С УЧЁТОМ ДЕДЛАЙНОВ И ПРИОРИТЕТОВ)
+    const tomorrowStr = _TimeUtilsScheduler
+      ? _TimeUtilsScheduler.getTomorrowStr(dateStr)
+      : new Date(new Date(dateStr).getTime() + 86400000).toISOString().split('T')[0];
 
-    // А) Домашка (фильтруем активные ДЗ)
+    // Домашка фильтруется по сроку:
+    // Сначала просроченная, затем на сегодня, затем на завтра
     const activeHw = homework
       .filter(h => h.status !== 'completed')
-      .sort((a, b) => {
-        // Сначала те, у кого дедлайн раньше
-        if (a.dueDate !== b.dueDate) return a.dueDate.localeCompare(b.dueDate);
-        // Затем по приоритету
-        const priorityOrder = { critical: 4, high: 3, medium: 2, low: 1 };
-        return (priorityOrder[b.priority] || 1) - (priorityOrder[a.priority] || 1);
+      .map(h => {
+        let urgency = 1;
+        if (h.dueDate < dateStr) urgency = 4; // просрочено
+        else if (h.dueDate === dateStr) urgency = 3; // сегодня
+        else if (h.dueDate === tomorrowStr) urgency = 2; // завтра
+        else urgency = 1; // в будущем
+
+        return { ...h, urgency };
       });
 
-    // Б) Целевые учебные блоки: ЕГЭ, Проект, Олимпиада
+    // Сортировка домашки: срочность -> обязательность -> приоритет
+    activeHw.sort((a, b) => {
+      if (b.urgency !== a.urgency) return b.urgency - a.urgency;
+      if (b.required !== a.required) return (b.required ? 1 : 0) - (a.required ? 1 : 0);
+      const prio = { critical: 4, high: 3, medium: 2, low: 1 };
+      return (prio[b.priority] || 1) - (prio[a.priority] || 1);
+    });
+
+    const tasksToSchedule = [];
     const activeProject = projects.find(p => p.priority === 'active' || p.isMain) || projects[0];
     const activeOly = olympiads.find(o => o.status === 'active') || olympiads[0];
 
@@ -372,168 +416,247 @@ const Scheduler = {
     const nextEgeTopic = egeTopics.find(t => t.status === 'in_progress') || egeTopics[0];
 
     if (mode === 'competitive') {
-      // В соревновательном режиме:
+      // Соревновательный режим:
       // 1. Проект / Хакатон — ГЛАВНЫЙ СЛОТ (60-80 мин)
       if (activeProject) {
         tasksToSchedule.push({
           title: `Проект «${activeProject.title}» (Подготовка к хакатону)`,
-          subtitle: 'Разработка ядра, тестирование модулей',
-          durationMinutes: 70,
+          subtitle: 'Разработка и тестирование модулей',
+          totalMinutes: 70,
+          remainingMinutes: 70,
           category: 'project',
           priorityWeight: 100,
           description: `Фокусная работа над проектом «${activeProject.title}». До хакатона 27 ноября осталось совсем мало времени!`
         });
       }
-      // 2. Обязательные ДЗ с близким сроком
-      activeHw.forEach(hw => {
+
+      // 2. Срочная домашка (только сегодня, завтра или просроченная)
+      activeHw.filter(h => h.urgency >= 2).forEach(hw => {
+        const mins = Number(hw.estimatedMinutes) || 30;
         tasksToSchedule.push({
           title: `ДЗ: ${hw.subject}`,
           subtitle: hw.title,
-          durationMinutes: hw.estimatedMinutes || 30,
+          totalMinutes: mins,
+          remainingMinutes: mins,
           category: 'homework',
-          priorityWeight: hw.required ? 80 : 40,
+          priorityWeight: hw.required ? 85 : 45,
           hwId: hw.id,
-          description: hw.description
+          description: hw.description || ''
         });
       });
-      // 3. Компактное поддержание ЕГЭ
-      tasksToSchedule.push({
-        title: 'ЕГЭ: Профильная математика (Часть 2)',
-        subtitle: nextEgeTopic ? `${nextEgeTopic.code} — ${nextEgeTopic.title}` : 'Уравнения и неравенства',
-        durationMinutes: 35,
-        category: 'ege',
-        priorityWeight: 60,
-        description: 'Ежедневная поддержка формы: решение 2 задач второй части.'
-      });
+
+      // 3. Компактное поддержание ЕГЭ (30 мин)
+      if (nextEgeTopic) {
+        tasksToSchedule.push({
+          title: 'ЕГЭ: Профильная математика (Часть 2)',
+          subtitle: `${nextEgeTopic.code} — ${nextEgeTopic.title}`,
+          totalMinutes: 30,
+          remainingMinutes: 30,
+          category: 'ege',
+          priorityWeight: 60,
+          description: 'Поддержание формы: решение прототипов второй части.'
+        });
+      }
 
     } else if (mode === 'loaded') {
-      // В загруженном режиме:
-      // 1. Все обязательные ДЗ
+      // Загруженный режим:
+      // 1. Вся срочная домашка в первую очередь
       activeHw.forEach(hw => {
+        const mins = Number(hw.estimatedMinutes) || 30;
         tasksToSchedule.push({
           title: `ДЗ: ${hw.subject}`,
           subtitle: hw.title,
-          durationMinutes: hw.estimatedMinutes || 30,
+          totalMinutes: mins,
+          remainingMinutes: mins,
           category: 'homework',
-          priorityWeight: hw.required ? 100 : 50,
+          priorityWeight: (hw.urgency * 25) + (hw.required ? 30 : 0),
           hwId: hw.id,
-          description: hw.description
+          description: hw.description || ''
         });
-      });
-      // 2. Компактное повторение ЕГЭ
-      tasksToSchedule.push({
-        title: 'ЕГЭ: Профильная математика',
-        subtitle: nextEgeTopic ? `${nextEgeTopic.code} ${nextEgeTopic.title}` : 'Быстрый тренинг',
-        durationMinutes: 30,
-        category: 'ege',
-        priorityWeight: 70,
-        description: 'Компактное повторение формул и ключевых прототипов.'
       });
 
+      // 2. Компактное повторение ЕГЭ
+      if (nextEgeTopic) {
+        tasksToSchedule.push({
+          title: 'ЕГЭ: Профильная математика',
+          subtitle: `${nextEgeTopic.code} — ${nextEgeTopic.title}`,
+          totalMinutes: 25,
+          remainingMinutes: 25,
+          category: 'ege',
+          priorityWeight: 50,
+          description: 'Компактное повторение ключевых формул.'
+        });
+      }
+
     } else {
-      // В обычном режиме:
+      // Обычный сбалансированный режим:
       // 1. Домашние задания
       activeHw.forEach(hw => {
+        // Задания с далеким сроком (>3 дней) добавляем только если они обязательные
+        if (hw.urgency === 1 && !hw.required) return;
+        const mins = Number(hw.estimatedMinutes) || 30;
         tasksToSchedule.push({
           title: `ДЗ: ${hw.subject}`,
           subtitle: hw.title,
-          durationMinutes: hw.estimatedMinutes || 30,
+          totalMinutes: mins,
+          remainingMinutes: mins,
           category: 'homework',
-          priorityWeight: hw.required ? 90 : 50,
+          priorityWeight: (hw.urgency * 25) + (hw.required ? 20 : 0),
           hwId: hw.id,
-          description: hw.description
+          description: hw.description || ''
         });
       });
+
       // 2. Блок ЕГЭ (45 мин)
-      tasksToSchedule.push({
-        title: 'ЕГЭ: Профильная математика (Часть 1 и 2)',
-        subtitle: nextEgeTopic ? `${nextEgeTopic.code} ${nextEgeTopic.title}` : 'Интенсивная практика',
-        durationMinutes: 45,
-        category: 'ege',
-        priorityWeight: 80,
-        description: 'Разбор теории, решение прототипов первой и второй части.'
-      });
-      // 3. Блок олимпиад или проектов по дням (2 раза в неделю олимпиада, 2 раза проект)
+      if (nextEgeTopic) {
+        tasksToSchedule.push({
+          title: 'ЕГЭ: Профильная математика',
+          subtitle: `${nextEgeTopic.code} — ${nextEgeTopic.title}`,
+          totalMinutes: 45,
+          remainingMinutes: 45,
+          category: 'ege',
+          priorityWeight: 75,
+          description: 'Разбор теории, решение прототипов первой и второй части.'
+        });
+      }
+
+      // 3. Олимпиада (понедельник/среда) или Проект (вторник/четверг)
       if (dayOfWeek === 1 || dayOfWeek === 3) {
-        // Олимпиада
-        tasksToSchedule.push({
-          title: `Олимпиада: ${activeOly ? activeOly.subject : 'Информатика/Математика'}`,
-          subtitle: activeOly ? activeOly.title : 'Решение олимпиадных задач прошлых лет',
-          durationMinutes: 40,
-          category: 'olympiad',
-          priorityWeight: 65,
-          description: 'Практика нестандартных олимпиадных задач.'
-        });
+        if (activeOly) {
+          tasksToSchedule.push({
+            title: `Олимпиада: ${activeOly.subject || 'Информатика'}`,
+            subtitle: activeOly.title || 'Решение олимпиадных задач',
+            totalMinutes: 40,
+            remainingMinutes: 40,
+            category: 'olympiad',
+            priorityWeight: 65,
+            description: 'Олимпиадный практикум нестандартных задач.'
+          });
+        }
       } else {
-        // Проект «Миросборка»
-        tasksToSchedule.push({
-          title: `Проект «${activeProject ? activeProject.title : 'Миросборка'}»`,
-          subtitle: 'Плановый блок разработки и алгоритмов',
-          durationMinutes: 40,
-          category: 'project',
-          priorityWeight: 65,
-          description: 'Работа над проектом, улучшение функциональности.'
-        });
+        if (activeProject) {
+          tasksToSchedule.push({
+            title: `Проект «${activeProject.title}»`,
+            subtitle: 'Плановый блок разработки и алгоритмов',
+            totalMinutes: 40,
+            remainingMinutes: 40,
+            category: 'project',
+            priorityWeight: 65,
+            description: 'Работа над проектом, улучшение функциональности.'
+          });
+        }
       }
     }
 
     // Сортируем задачи по весу приоритета
     tasksToSchedule.sort((a, b) => b.priorityWeight - a.priorityWeight);
 
-    // Заполнение свободных слотов
+    // 8. РАСПРЕДЕЛЕНИЕ С ПОДДЕРЖКОЙ РАЗБИЕНИЯ ЗАДАЧ (БЕЗ УРЕЗАНИЯ ВРЕМЕНИ!)
     let unallocatedMinutes = 0;
     const unallocatedTasks = [];
 
     for (const item of tasksToSchedule) {
-      let allocated = false;
+      let partNumber = 1;
 
-      // Ищем свободный слот подходящего размера
-      for (let i = 0; i < freeSlots.length; i++) {
-        const slot = freeSlots[i];
-        if (slot.duration >= 20) {
-          const taskDur = Math.min(item.durationMinutes, slot.duration);
-          
-          tasks.push({
-            id: `task_${dateStr}_${tasks.length + 1}`,
-            title: item.title,
-            subtitle: item.subtitle,
-            startTime: this.minToTime(slot.start),
-            endTime: this.minToTime(slot.start + taskDur),
-            durationMinutes: taskDur,
-            category: item.category,
-            status: 'pending',
-            isProtected: false,
-            hwId: item.hwId || null,
-            description: item.description || ''
-          });
+      while (item.remainingMinutes > 0) {
+        let placedChunk = false;
 
-          // Уменьшаем свободный слот
-          slot.start += taskDur + 5; // +5 мин на короткую передышку
-          slot.duration -= (taskDur + 5);
-          allocated = true;
-          break;
+        for (let i = 0; i < freeSlots.length; i++) {
+          const slot = freeSlots[i];
+          if (slot.duration >= 15) {
+            // Если задача помещается полностью
+            if (item.remainingMinutes <= slot.duration) {
+              const dur = item.remainingMinutes;
+              const titleSuffix = partNumber > 1 ? ` (Часть ${partNumber})` : '';
+
+              tasks.push({
+                id: `task_${dateStr}_${tasks.length + 1}`,
+                title: `${item.title}${titleSuffix}`,
+                subtitle: item.subtitle,
+                startTime: this.minToTime(slot.start),
+                endTime: this.minToTime(slot.start + dur),
+                durationMinutes: dur,
+                totalTaskMinutes: item.totalMinutes,
+                category: item.category,
+                status: 'pending',
+                isProtected: false,
+                hwId: item.hwId || null,
+                description: item.description || ''
+              });
+
+              slot.start += dur + 5;
+              slot.duration -= (dur + 5);
+              item.remainingMinutes = 0;
+              placedChunk = true;
+              break;
+            }
+            // Если слот меньше задачи, но в нем можно сделать ощутимую часть (>= 20 мин)
+            else if (slot.duration >= 20) {
+              const dur = slot.duration;
+              const titleSuffix = ` (Часть ${partNumber})`;
+
+              tasks.push({
+                id: `task_${dateStr}_${tasks.length + 1}`,
+                title: `${item.title}${titleSuffix}`,
+                subtitle: `${item.subtitle} [${dur} из ${item.totalMinutes} мин]`,
+                startTime: this.minToTime(slot.start),
+                endTime: this.minToTime(slot.start + dur),
+                durationMinutes: dur,
+                totalTaskMinutes: item.totalMinutes,
+                category: item.category,
+                status: 'pending',
+                isProtected: false,
+                hwId: item.hwId || null,
+                description: item.description || ''
+              });
+
+              slot.start += dur;
+              slot.duration = 0;
+              item.remainingMinutes -= dur;
+              partNumber++;
+              placedChunk = true;
+              break;
+            }
+          }
         }
-      }
 
-      if (!allocated) {
-        unallocatedMinutes += item.durationMinutes;
-        unallocatedTasks.push(item);
+        // Если не удалось разместить текущую часть ни в одном слоте
+        if (!placedChunk) {
+          unallocatedMinutes += item.remainingMinutes;
+          unallocatedTasks.push({
+            title: item.title,
+            hwId: item.hwId || null,
+            totalMinutes: item.totalMinutes,
+            unallocatedMinutes: item.remainingMinutes,
+            reason: partNumber > 1
+              ? `Размещено ${item.totalMinutes - item.remainingMinutes} мин. Остаток (${item.remainingMinutes} мин) не поместился до отбоя.`
+              : 'Недостаточно свободного времени до отбоя.'
+          });
+          break; // Выходим из while для этой задачи
+        }
       }
     }
 
     // Сортировка всех задач по времени начала
     tasks.sort((a, b) => this.timeToMin(a.startTime) - this.timeToMin(b.startTime));
 
-    // Итоговый объект расписания
+    // Проверка целостности и отсутствия конфликтов
+    const integrityCheck = this.verifyScheduleIntegrity(tasks, wakeMin, sleepMin);
+
     const scheduleResult = {
       date: dateStr,
       mode: mode,
       modeReason: modeInfo.reason,
       has8thLesson: has8thLesson,
-      schoolEndTime: this.minToTime(schoolEndMin),
+      schoolEndTime: this.minToTime(actualSchoolEndMin),
       yastuTime: yastuBlock.startTime,
       unallocatedMinutes: unallocatedMinutes,
       unallocatedTasks: unallocatedTasks,
+      isOverloaded: unallocatedMinutes > 0,
+      overloadWarning: unallocatedMinutes > 0
+        ? `⚠️ Внимание: учебная нагрузка превышает доступное время до отбоя (не поместилось ${unallocatedMinutes} мин). Необязательные задачи перенесены, сон в 21:30 и защищённые блоки соблюдены.`
+        : null,
+      integrity: integrityCheck,
       generatedAt: new Date().toISOString(),
       tasks: tasks
     };
@@ -542,12 +665,58 @@ const Scheduler = {
   },
 
   /**
+   * Полная верификация расписания: проверка наложений, границ и защищённых интервалов
+   * @param {Array|Object} tasksOrSchedule - массив задач или объект расписания
+   * @param {number} wakeMin
+   * @param {number} sleepMin
+   * @returns {{ valid: boolean, errors: string[] }}
+   */
+  verifyScheduleIntegrity(tasksOrSchedule, wakeMin = 360, sleepMin = 1290) {
+    const tasks = Array.isArray(tasksOrSchedule)
+      ? tasksOrSchedule
+      : (tasksOrSchedule && Array.isArray(tasksOrSchedule.tasks) ? tasksOrSchedule.tasks : []);
+    const errors = [];
+
+    for (let i = 0; i < tasks.length; i++) {
+      const cur = tasks[i];
+      const start = this.timeToMin(cur.startTime);
+      const end = this.timeToMin(cur.endTime);
+
+      if (end <= start && cur.category !== 'sleep') {
+        errors.push(`Отрицательная или нулевая продолжительность: "${cur.title}" (${cur.startTime}–${cur.endTime})`);
+      }
+
+      // Проверка наложения с предыдущей задачей
+      if (i > 0) {
+        const prev = tasks[i - 1];
+        const prevEnd = this.timeToMin(prev.endTime);
+        if (prevEnd > start && prev.category !== 'sleep') {
+          errors.push(`Временное пересечение: "${prev.title}" (до ${prev.endTime}) накладывается на "${cur.title}" (с ${cur.startTime})`);
+        }
+      }
+    }
+
+    // Проверка обязательных защищенных блоков
+    const hasSleep = tasks.some(t => t.category === 'sleep');
+    const hasPrayer = tasks.some(t => t.category === 'prayer');
+    const hasGaming = tasks.some(t => t.category === 'gaming');
+
+    if (!hasSleep) errors.push('Отсутствует защищённый блок сна (21:30–06:00)!');
+    if (!hasPrayer) errors.push('Отсутствует защищённый блок намаза ясту!');
+    if (!hasGaming) errors.push('Отсутствует защищённый блок игр на ПК (60 мин)!');
+
+    return {
+      valid: errors.length === 0,
+      errors: errors
+    };
+  },
+
+  /**
    * Применить перепланирование с сохранением бэкапа для отката
    */
   async applyScheduleWithBackup(dateStr, newSchedule, db, reason = 'Автоматическое обновление расписания') {
     const previous = await db.getDaySchedule(dateStr);
-    
-    // Сохраняем в историю отката
+
     if (previous && previous.tasks) {
       await db.addReplanHistory({
         date: dateStr,

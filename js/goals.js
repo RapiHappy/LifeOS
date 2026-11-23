@@ -2,11 +2,21 @@
  * LifeOS — Модуль «Цели» (goals.js)
  * Подготовка к ЕГЭ (Профильная математика обе части, Информатика, Русский язык),
  * Олимпиады и Проекты (включая «Миросборка» и Хакатон 27 ноября 2026).
+ * Интеграция с TimeUtils (Europe/Moscow).
  */
 
 const GoalsManager = {
   currentTab: 'ege', // 'ege' | 'olympiads' | 'projects'
   currentEgeSubject: 'math', // 'math' | 'informatics' | 'russian'
+
+  getTimeLib() {
+    return (typeof TimeUtils !== 'undefined') ? TimeUtils : (typeof globalThis !== 'undefined' && globalThis.TimeUtils ? globalThis.TimeUtils : null);
+  },
+
+  getTodayString() {
+    const t = this.getTimeLib();
+    return t ? t.getTodayStr() : new Date().toISOString().split('T')[0];
+  },
 
   init(db) {
     this.db = db;
@@ -122,7 +132,7 @@ const GoalsManager = {
         <div class="section-card-header">
           <div>
             <h3>${subjectNames[this.currentEgeSubject]}</h3>
-            <p class="text-muted">Отмечайте реальные результаты тренировочных вариантов и отработанные темы. Никаких случайных цифр.</p>
+            <p class="text-muted">Отмечайте реальные результаты тренировочных вариантов и отработанные темы. Все показатели начинаются с нуля.</p>
           </div>
         </div>
 
@@ -134,17 +144,6 @@ const GoalsManager = {
     const part2 = topics.filter(t => t.part === 2);
 
     const renderTopicCard = (topic) => {
-      const statusLabels = {
-        not_started: 'Не начато',
-        in_progress: 'В процессе',
-        mastered: 'Освоено'
-      };
-      const statusClasses = {
-        not_started: 'badge-muted',
-        in_progress: 'badge-warning',
-        mastered: 'badge-success'
-      };
-
       const hasMistakes = topic.mistakes && topic.mistakes.length > 0;
 
       return `
@@ -231,12 +230,12 @@ const GoalsManager = {
 
     await this.db.updateEgeTopic(topic);
 
-    // Логируем в статистику
+    const todayStr = this.getTodayString();
     await this.db.logActivity({
       category: 'ege',
       title: `ЕГЭ ${topic.subject}: ${topic.code} (${isCorrect ? 'верно' : 'ошибка'})`,
       durationMinutes: 10,
-      date: new Date().toISOString().split('T')[0]
+      date: todayStr
     });
 
     this.render();
@@ -254,6 +253,9 @@ const GoalsManager = {
         document.body.appendChild(modal);
       }
 
+      const timeLib = this.getTimeLib();
+      const defaultReviewDate = timeLib ? timeLib.addDays(this.getTodayString(), 3) : new Date(Date.now() + 3*24*60*60*1000).toISOString().split('T')[0];
+
       modal.innerHTML = `
         <div class="modal-card">
           <div class="modal-header">
@@ -268,7 +270,7 @@ const GoalsManager = {
             </div>
             <div class="form-group">
               <label>Дата следующего повторения этой темы:</label>
-              <input type="date" id="review-date-input" class="form-control" value="${new Date(Date.now() + 3*24*60*60*1000).toISOString().split('T')[0]}">
+              <input type="date" id="review-date-input" class="form-control" value="${defaultReviewDate}">
             </div>
           </div>
           <div class="modal-footer">
@@ -306,6 +308,8 @@ const GoalsManager = {
   // ==========================================
   async renderOlympiadsSection() {
     const olympiads = await this.db.getOlympiads();
+    const todayStr = this.getTodayString();
+    const timeLib = this.getTimeLib();
 
     let html = `
       <div class="section-card">
@@ -327,23 +331,21 @@ const GoalsManager = {
         </div>
       `;
     } else {
-      const today = new Date();
       olympiads.forEach(oly => {
         let diffDays = null;
         if (oly.date) {
-          const olyDate = new Date(oly.date);
-          diffDays = Math.ceil((olyDate - today) / (1000 * 60 * 60 * 24));
+          diffDays = timeLib ? timeLib.diffDays(todayStr, oly.date) : Math.ceil((new Date(oly.date) - new Date()) / (1000 * 60 * 60 * 24));
         }
 
         const solved = oly.solvedCount || 0;
-        const target = oly.prepTasksCount || 50;
-        const percent = Math.min(100, Math.round((solved / target) * 100));
+        const target = oly.prepTasksCount || 30;
+        const percent = target > 0 ? Math.min(100, Math.round((solved / target) * 100)) : 0;
 
         html += `
           <div class="goal-item-card">
             <div class="goal-item-header">
               <span class="badge badge-purple">${oly.subject || 'Предмет'}</span>
-              ${diffDays !== null ? `<span class="badge ${diffDays <= 7 ? 'badge-danger' : 'badge-info'}">Дней осталось: ${diffDays}</span>` : ''}
+              ${diffDays !== null ? `<span class="badge ${diffDays <= 7 ? 'badge-danger' : 'badge-info'}">Дней осталось: ${diffDays >= 0 ? diffDays : 'прошла'}</span>` : ''}
             </div>
             <h4>${oly.title}</h4>
             <div class="goal-meta text-muted">
@@ -386,12 +388,12 @@ const GoalsManager = {
     oly.solvedCount = (oly.solvedCount || 0) + 1;
     await this.db.saveOlympiad(oly);
 
-    // Логируем активность
+    const todayStr = this.getTodayString();
     await this.db.logActivity({
       category: 'olympiad',
       title: `Олимпиада: ${oly.title} (+1 задача)`,
       durationMinutes: 20,
-      date: new Date().toISOString().split('T')[0]
+      date: todayStr
     });
 
     this.render();
@@ -412,6 +414,9 @@ const GoalsManager = {
       modal.className = 'modal-backdrop';
       document.body.appendChild(modal);
     }
+
+    const timeLib = this.getTimeLib();
+    const defaultOlyDate = timeLib ? timeLib.addDays(this.getTodayString(), 14) : new Date(Date.now() + 14*24*60*60*1000).toISOString().split('T')[0];
 
     modal.innerHTML = `
       <div class="modal-card">
@@ -437,7 +442,7 @@ const GoalsManager = {
           <div class="form-row">
             <div class="form-group col">
               <label>Дата проведения *</label>
-              <input type="date" id="oly-date" class="form-control" required value="${new Date(Date.now() + 14*24*60*60*1000).toISOString().split('T')[0]}">
+              <input type="date" id="oly-date" class="form-control" required value="${defaultOlyDate}">
             </div>
             <div class="form-group col">
               <label>План задач для подготовки</label>
@@ -481,7 +486,8 @@ const GoalsManager = {
   // ==========================================
   async renderProjectsSection() {
     const projects = await this.db.getProjects();
-    const today = new Date();
+    const todayStr = this.getTodayString();
+    const timeLib = this.getTimeLib();
 
     let html = `
       <div class="section-card">
@@ -502,8 +508,7 @@ const GoalsManager = {
       projects.forEach(p => {
         let diffDays = null;
         if (p.deadline) {
-          const d = new Date(p.deadline);
-          diffDays = Math.ceil((d - today) / (1000 * 60 * 60 * 24));
+          diffDays = timeLib ? timeLib.diffDays(todayStr, p.deadline) : Math.ceil((new Date(p.deadline) - new Date()) / (1000 * 60 * 60 * 24));
         }
 
         const stages = p.stages || [];
@@ -614,11 +619,12 @@ const GoalsManager = {
   async logProjectWork(projectId) {
     const p = await this.db.get('projects', projectId);
     if (!p) return;
+    const todayStr = this.getTodayString();
     await this.db.logActivity({
       category: 'project',
       title: `Разработка: ${p.title}`,
       durationMinutes: 40,
-      date: new Date().toISOString().split('T')[0]
+      date: todayStr
     });
     alert(`Зафиксировано 40 минут продуктивной работы над проектом «${p.title}»! Данные учтены в статистике.`);
   },
@@ -630,8 +636,7 @@ const GoalsManager = {
       pr.priority = pr.isMain ? 'active' : 'secondary';
       await this.db.saveProject(pr);
     }
-    // Перепланирование текущего дня под новый приоритетный проект
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = this.getTodayString();
     await AIPlanner.autoReplan(todayStr, this.db, 'Смена главного проекта');
     this.render();
   },
@@ -721,7 +726,7 @@ const GoalsManager = {
     const modal = document.getElementById('project-modal');
     if (modal) modal.remove();
 
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = this.getTodayString();
     await AIPlanner.autoReplan(todayStr, this.db, 'Добавление нового проекта');
 
     this.render();
@@ -730,4 +735,7 @@ const GoalsManager = {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = GoalsManager;
+}
+if (typeof globalThis !== 'undefined') {
+  globalThis.GoalsManager = GoalsManager;
 }
