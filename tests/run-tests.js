@@ -204,7 +204,7 @@ async function runScenario(number, title, fn) {
 
 async function runAll25Scenarios() {
   console.log('\n========================================================================');
-  console.log('--- LifeOS v1.2.2 — Полный комплекс из 25 тестовых сценариев ---');
+  console.log('--- LifeOS v1.2.3 — Полный комплекс из 25 тестовых сценариев ---');
   console.log('========================================================================\n');
 
   // -------------------------------------------------------------------------
@@ -245,13 +245,38 @@ async function runAll25Scenarios() {
     assert.strictEqual(settings.schoolTimetableScreenshotsImported, true);
     const timetable = (await Database.getSchoolTimetable()).sort((a, b) => a.dayOfWeek - b.dayOfWeek);
     assert.strictEqual(timetable.length, 7);
-    assert.deepStrictEqual(timetable.map(d => (d.lessons || []).length), [6, 7, 7, 6, 7, 4, 0]);
+    assert.deepStrictEqual(timetable.map(d => (d.lessons || []).length), [7, 8, 7, 8, 7, 4, 0]);
     assert.strictEqual(timetable[0].lessons[0].subject, 'Информатика');
     assert.strictEqual(timetable[0].lessons[0].startTime, '08:45');
     assert.strictEqual(timetable[0].lessons[0].room, '218');
     assert.strictEqual(timetable[2].lessons[0].isTest, true);
     assert.strictEqual(timetable[5].lessons[3].endTime, '11:15');
     assert.ok(!timetable.flatMap(d => d.lessons || []).some(l => l.subject === 'Разговоры о важном'));
+    const mondayClass = timetable[0].lessons.find(l => l.isClassHour);
+    assert.deepStrictEqual(
+      { lessonNumber: mondayClass.lessonNumber, startTime: mondayClass.startTime, endTime: mondayClass.endTime },
+      { lessonNumber: 1, startTime: '08:00', endTime: '08:40' }
+    );
+    const tuesdayMath = timetable[1].lessons.find(l => l.subject === 'Дополнительная математика');
+    assert.deepStrictEqual(
+      { lessonNumber: tuesdayMath.lessonNumber, startTime: tuesdayMath.startTime, endTime: tuesdayMath.endTime, isAfterSchool: tuesdayMath.isAfterSchool },
+      { lessonNumber: 8, startTime: '14:45', endTime: '15:30', isAfterSchool: false }
+    );
+    const thursdayClass = timetable[3].lessons.find(l => l.isClassHour);
+    assert.deepStrictEqual(
+      { lessonNumber: thursdayClass.lessonNumber, startTime: thursdayClass.startTime, endTime: thursdayClass.endTime },
+      { lessonNumber: 6, startTime: '12:15', endTime: '12:55' }
+    );
+    const thursdayMath = timetable[3].lessons.find(l => l.subject === 'Дополнительная математика');
+    assert.deepStrictEqual(
+      { lessonNumber: thursdayMath.lessonNumber, startTime: thursdayMath.startTime, endTime: thursdayMath.endTime },
+      { lessonNumber: 8, startTime: '14:45', endTime: '15:30' }
+    );
+    const thursdayNativeLit = timetable[3].lessons.find(l => l.subject === 'Родная (татарская) литература');
+    assert.deepStrictEqual(
+      { lessonNumber: thursdayNativeLit.lessonNumber, startTime: thursdayNativeLit.startTime, endTime: thursdayNativeLit.endTime },
+      { lessonNumber: 7, startTime: '13:05', endTime: '13:45' }
+    );
   });
 
   // -------------------------------------------------------------------------
@@ -1013,6 +1038,8 @@ async function runAll25Scenarios() {
   await runScenario('20b', 'Перемены между уроками рассчитаны по интервалам на скриншотах', async () => {
     // Изолированно поднимаем исходное расписание: предыдущие сценарии тестируют другие наборы данных.
     await Database.seedUserSchoolTimetableFromScreenshots();
+    Database.saveSettings({ schoolTimetableSupplementsVersion: null });
+    await Database.ensureUserTimetableSupplements();
     const timetable = (await Database.getSchoolTimetable()).sort((a, b) => a.dayOfWeek - b.dayOfWeek);
     const durationsFor = (dayOfWeek) => {
       const lessons = (timetable.find(day => day.dayOfWeek === dayOfWeek)?.lessons || [])
@@ -1024,10 +1051,10 @@ async function runAll25Scenarios() {
       });
     };
 
-    assert.deepStrictEqual(durationsFor(1), [5, 20, 20, 5, 10], 'Понедельник: 5/20/20/5/10 минут');
-    assert.deepStrictEqual(durationsFor(2), [5, 5, 20, 20, 5, 10], 'Вторник: перемены между видимыми уроками');
+    assert.deepStrictEqual(durationsFor(1), [5, 5, 20, 20, 5, 10], 'Понедельник: перемены с классным часом');
+    assert.deepStrictEqual(durationsFor(2), [5, 5, 20, 20, 5, 10, 60], 'Вторник: окно перед восьмой математикой');
     assert.deepStrictEqual(durationsFor(3), [5, 5, 20, 20, 5, 10], 'Среда: перемены между видимыми уроками');
-    assert.deepStrictEqual(durationsFor(4), [5, 5, 20, 20, 5], 'Четверг: перемены между видимыми уроками');
+    assert.deepStrictEqual(durationsFor(4), [5, 5, 20, 20, 5, 10, 60], 'Четверг: классный час, 7-й урок и 8-я математика');
     assert.deepStrictEqual(durationsFor(5), [5, 5, 20, 20, 5, 10], 'Пятница: перемены между видимыми уроками');
     assert.deepStrictEqual(durationsFor(6), [5, 15, 15], 'Суббота: 5/15/15 минут');
 

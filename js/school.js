@@ -272,7 +272,7 @@ const SchoolManager = {
             if (breakInterval) {
               html += `
                 <div class="lesson-break-row" role="note" aria-label="Перемена ${breakInterval.durationMinutes} минут">
-                  <span class="lesson-break-label">🏃 Перемена ${breakInterval.durationMinutes} минут</span>
+                  <span class="lesson-break-label">${breakInterval.durationMinutes >= 30 ? '⌛ Окно' : '🏃 Перемена'} ${breakInterval.durationMinutes} минут</span>
                   <span class="lesson-break-time">${breakInterval.startTime} – ${breakInterval.endTime}</span>
                 </div>
               `;
@@ -291,6 +291,8 @@ const SchoolManager = {
                   ${lesson.lessonNumber === 8 ? '<span class="badge badge-purple">8-й урок</span>' : ''}
                   ${lesson.lessonNumber === 7 ? '<span class="badge badge-info">7-й урок</span>' : ''}
                   ${lesson.isExtra && lesson.lessonNumber < 7 ? '<span class="badge badge-accent">Факультатив</span>' : ''}
+                  ${lesson.isClassHour ? '<span class="badge badge-info">Классный час</span>' : ''}
+                  ${lesson.isExtra && lesson.lessonNumber === 8 ? '<span class="badge badge-purple">Дополнительная математика</span>' : ''}
                   ${lesson.isTest ? '<span class="badge badge-danger">🔥 Контрольная</span>' : ''}
                   ${isCanceled ? '<span class="badge badge-muted">Отменён</span>' : ''}
                 </div>

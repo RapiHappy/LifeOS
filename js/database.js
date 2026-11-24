@@ -444,6 +444,139 @@ const Database = {
     return rawDays.reduce((sum, day) => sum + day.length, 0);
   },
 
+  /**
+   * Однократное дополнение перенесённого расписания:
+   * классные часы в понедельник и четверг, дополнительные уроки математики
+   * во вторник и четверг. Существующие записи не удаляются.
+   */
+  async ensureUserTimetableSupplements() {
+    const settings = this.getSettings();
+    const version = '2026-11-24-class-hours-math-extra-v1';
+    if (settings.schoolTimetableScreenshotsImported !== true ||
+        settings.schoolTimetableSupplementsVersion === version) {
+      return 0;
+    }
+
+    let added = 0;
+    const monday = await this.get('school_timetable', 1);
+    if (monday && Array.isArray(monday.lessons)) {
+      const hasClassHour = monday.lessons.some(lesson =>
+        lesson.isClassHour === true || lesson.subject === 'Классный час'
+      );
+      if (!hasClassHour) {
+        monday.lessons = monday.lessons.map(lesson => ({
+          ...lesson,
+          lessonNumber: (Number(lesson.lessonNumber) || 0) + 1
+        }));
+        monday.lessons.push({
+          id: 'school_mon_class_hour',
+          lessonNumber: 1,
+          subject: 'Классный час',
+          startTime: '08:00',
+          endTime: '08:40',
+          room: '',
+          isClassHour: true,
+          isExtra: false,
+          isAfterSchool: false,
+          isCanceled: false,
+          isTest: false
+        });
+        monday.lessons.sort((a, b) => a.lessonNumber - b.lessonNumber);
+        await this.saveDayTimetable(1, monday.lessons);
+        added++;
+      }
+    }
+
+    const tuesday = await this.get('school_timetable', 2);
+    if (tuesday && Array.isArray(tuesday.lessons)) {
+      const hasMathExtra = tuesday.lessons.some(lesson =>
+        lesson.id === 'school_tue_math_extra' ||
+        (lesson.subject === 'Дополнительная математика' && lesson.startTime === '14:45')
+      );
+      if (!hasMathExtra) {
+        tuesday.lessons.push({
+          id: 'school_tue_math_extra',
+          lessonNumber: 8,
+          subject: 'Дополнительная математика',
+          startTime: '14:45',
+          endTime: '15:30',
+          room: '',
+          isClassHour: false,
+          isExtra: true,
+          isAfterSchool: false,
+          isCanceled: false,
+          isTest: false,
+          notes: 'Дополнительное занятие по математике'
+        });
+        tuesday.lessons.sort((a, b) => a.lessonNumber - b.lessonNumber);
+        await this.saveDayTimetable(2, tuesday.lessons);
+        added++;
+      }
+    }
+
+    const thursday = await this.get('school_timetable', 4);
+    if (thursday && Array.isArray(thursday.lessons)) {
+      const hasClassHour = thursday.lessons.some(lesson =>
+        lesson.isClassHour === true || lesson.subject === 'Классный час'
+      );
+      if (!hasClassHour) {
+        const nativeLiterature = thursday.lessons.find(lesson =>
+          lesson.subject === 'Родная (татарская) литература' &&
+          lesson.startTime === '12:15' &&
+          lesson.endTime === '12:55'
+        );
+        if (nativeLiterature) {
+          nativeLiterature.lessonNumber = 7;
+          nativeLiterature.startTime = '13:05';
+          nativeLiterature.endTime = '13:45';
+        }
+        thursday.lessons.push({
+          id: 'school_thu_class_hour',
+          lessonNumber: 6,
+          subject: 'Классный час',
+          startTime: '12:15',
+          endTime: '12:55',
+          room: '',
+          isClassHour: true,
+          isExtra: false,
+          isAfterSchool: false,
+          isCanceled: false,
+          isTest: false
+        });
+        thursday.lessons.sort((a, b) => a.lessonNumber - b.lessonNumber);
+        await this.saveDayTimetable(4, thursday.lessons);
+        added++;
+      }
+
+      const hasMathExtra = thursday.lessons.some(lesson =>
+        lesson.id === 'school_thu_math_extra' ||
+        (lesson.subject === 'Дополнительная математика' && lesson.startTime === '14:45')
+      );
+      if (!hasMathExtra) {
+        thursday.lessons.push({
+          id: 'school_thu_math_extra',
+          lessonNumber: 8,
+          subject: 'Дополнительная математика',
+          startTime: '14:45',
+          endTime: '15:30',
+          room: '',
+          isClassHour: false,
+          isExtra: true,
+          isAfterSchool: false,
+          isCanceled: false,
+          isTest: false,
+          notes: 'Дополнительное занятие по математике'
+        });
+        thursday.lessons.sort((a, b) => a.lessonNumber - b.lessonNumber);
+        await this.saveDayTimetable(4, thursday.lessons);
+        added++;
+      }
+    }
+
+    this.saveSettings({ schoolTimetableSupplementsVersion: version });
+    return added;
+  },
+
   async checkAndSeedData() {
     // 1. Синхронизация каталога тем ЕГЭ без потери пользовательского прогресса
     await this.syncEgeTopicsCatalog();
@@ -459,6 +592,9 @@ const Database = {
       settings.schoolTimetableScreenshotsImported !== true
     );
     if (shouldRestore) await this.seedUserSchoolTimetableFromScreenshots();
+
+    // 2.1 Однократный перенос классных часов и дополнительных уроков математики.
+    await this.ensureUserTimetableSupplements();
 
     // 3. Проекты (если пусто, инициализируем проект «Миросборка»)
     const projects = await this.getAll('projects');
