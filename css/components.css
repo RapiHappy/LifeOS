@@ -1123,3 +1123,32 @@
 .toast-message.toast-error {
   background: #dc2626;
 }
+
+
+/* Перемены между уроками: рассчитываются из реальных интервалов соседних уроков */
+.lesson-break-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-height: 1.1rem;
+  padding: 0.05rem 1rem;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  line-height: 1.25;
+}
+.lesson-break-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.lesson-break-time {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 600px) {
+  .lesson-break-row {
+    padding-inline: 0.5rem;
+    font-size: 0.7rem;
+  }
+}

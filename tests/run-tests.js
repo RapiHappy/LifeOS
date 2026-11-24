@@ -1,6 +1,6 @@
 /**
  * LifeOS v1.2 — Comprehensive Automated Test Suite
- * 20 Production Scenarios Verifying Data Safety, Clean Timetable Initialization,
+ * 25 Production Scenarios Verifying Data Safety, Clean Timetable Initialization,
  * Unified Task Status System, Deduplicated Activity Log, Real Rescheduling,
  * Secret Purging, Honest Local AI Planner, Web Notifications, and Moscow Timezone Accuracy.
  */
@@ -202,7 +202,37 @@ async function runScenario(number, title, fn) {
   }
 }
 
-async function runAll24Scenarios() {
+async function runAll25Scenarios() {
+  // -------------------------------------------------------------------------
+  // СЦЕНАРИЙ 20b: Отображаемые перемены рассчитываются по реальным интервалам уроков
+  // -------------------------------------------------------------------------
+  await runScenario('20b', 'Перемены между уроками рассчитаны по интервалам на скриншотах', async () => {
+    const timetable = (await Database.getSchoolTimetable()).sort((a, b) => a.dayOfWeek - b.dayOfWeek);
+    const durationsFor = (dayOfWeek) => {
+      const lessons = (timetable.find(day => day.dayOfWeek === dayOfWeek)?.lessons || [])
+        .filter(lesson => !lesson.isAfterSchool)
+        .sort((a, b) => TimeUtils.timeToMin(a.startTime) - TimeUtils.timeToMin(b.startTime));
+      return lessons.slice(1).map((lesson, index) => {
+        const interval = SchoolManager.getBreakBetweenLessons(lessons[index], lesson);
+        return interval ? interval.durationMinutes : 0;
+      });
+    };
+
+    assert.deepStrictEqual(durationsFor(1), [5, 20, 20, 5, 10], 'Понедельник: 5/20/20/5/10 минут');
+    assert.deepStrictEqual(durationsFor(2), [5, 5, 20, 20, 5, 10], 'Вторник: перемены между видимыми уроками');
+    assert.deepStrictEqual(durationsFor(3), [5, 5, 20, 20, 5, 10], 'Среда: перемены между видимыми уроками');
+    assert.deepStrictEqual(durationsFor(4), [5, 5, 20, 20, 5], 'Четверг: перемены между видимыми уроками');
+    assert.deepStrictEqual(durationsFor(5), [5, 5, 20, 20, 5, 10], 'Пятница: перемены между видимыми уроками');
+    assert.deepStrictEqual(durationsFor(6), [5, 15, 15], 'Суббота: 5/15/15 минут');
+
+    assert.strictEqual(SchoolManager.getBreakBetweenLessons(
+      { endTime: '09:30' }, { startTime: '09:30' }
+    ), null, 'Нулевая перемена не создаётся');
+    assert.strictEqual(SchoolManager.getBreakBetweenLessons(
+      { endTime: '09:40' }, { startTime: '09:30' }
+    ), null, 'Пересечение не маскируется под перемену');
+  });
+
   console.log('\n========================================================================');
   console.log('--- LifeOS v1.2 — Полный комплекс из 24 тестовых сценариев ---');
   console.log('========================================================================\n');
@@ -1016,7 +1046,7 @@ async function runAll24Scenarios() {
   }
 }
 
-runAll24Scenarios().catch(err => {
+runAll25Scenarios().catch(err => {
   console.error('Критический сбой тестового набора:', err);
   process.exit(1);
 });

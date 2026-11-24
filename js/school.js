@@ -44,6 +44,27 @@ const SchoolManager = {
     this.render();
   },
 
+  /**
+   * Рассчитывает перемены по разнице между окончанием и началом соседних уроков.
+   * Перемены не хранятся как отдельные уроки и не попадают в автопланировщик.
+   */
+  getBreakBetweenLessons(previousLesson, nextLesson) {
+    if (!previousLesson || !nextLesson || !previousLesson.endTime || !nextLesson.startTime) return null;
+    const timeLib = (typeof TimeUtils !== 'undefined')
+      ? TimeUtils
+      : (typeof globalThis !== 'undefined' && globalThis.TimeUtils ? globalThis.TimeUtils : null);
+    const toMinutes = (value) => {
+      if (timeLib && typeof timeLib.timeToMin === 'function') return timeLib.timeToMin(value);
+      const parts = String(value).split(':').map(Number);
+      return parts.length === 2 && parts.every(Number.isFinite) ? parts[0] * 60 + parts[1] : NaN;
+    };
+    const start = toMinutes(previousLesson.endTime);
+    const end = toMinutes(nextLesson.startTime);
+    const durationMinutes = end - start;
+    if (!Number.isFinite(start) || !Number.isFinite(end) || durationMinutes <= 0) return null;
+    return { startTime: previousLesson.endTime, endTime: nextLesson.startTime, durationMinutes };
+  },
+
   async confirmTimetable() {
     const timetable = await this.db.getSchoolTimetable();
     const totalLessons = timetable.reduce((acc, d) => acc + (d.lessons ? d.lessons.length : 0), 0);
@@ -232,7 +253,31 @@ const SchoolManager = {
     } else {
       // 1. Школьные уроки
       if (schoolLessons.length > 0) {
-        schoolLessons.forEach((lesson) => {
+        const orderedSchoolLessons = [...schoolLessons].sort((a, b) => {
+          const toMin = (value) => {
+            const timeLib = (typeof TimeUtils !== 'undefined') ? TimeUtils : null;
+            if (timeLib && timeLib.timeToMin) return timeLib.timeToMin(value);
+            const [hours, minutes] = String(value).split(':').map(Number);
+            return hours * 60 + minutes;
+          };
+          return toMin(a.startTime) - toMin(b.startTime);
+        });
+
+        orderedSchoolLessons.forEach((lesson, displayIndex) => {
+          if (displayIndex > 0) {
+            const breakInterval = this.getBreakBetweenLessons(
+              orderedSchoolLessons[displayIndex - 1],
+              lesson
+            );
+            if (breakInterval) {
+              html += `
+                <div class="lesson-break-row" role="note" aria-label="Перемена ${breakInterval.durationMinutes} минут">
+                  <span class="lesson-break-label">🏃 Перемена ${breakInterval.durationMinutes} минут</span>
+                  <span class="lesson-break-time">${breakInterval.startTime} – ${breakInterval.endTime}</span>
+                </div>
+              `;
+            }
+          }
           const index = lessons.indexOf(lesson);
           const isCanceled = !!lesson.isCanceled;
           const isExtra = !!lesson.isExtra || lesson.lessonNumber >= 8;
