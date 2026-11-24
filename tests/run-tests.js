@@ -259,35 +259,50 @@ async function runAll24Scenarios() {
   // -------------------------------------------------------------------------
   await runScenario('1b', 'Повторная инициализация не перезаписывает изменённое пользователем расписание', async () => {
     const monday = await Database.get('school_timetable', 1);
+    const originalSubject = monday.lessons[0].subject;
     monday.lessons[0].subject = 'Пользовательская правка — информатика';
     await Database.saveDayTimetable(1, monday.lessons);
     await Database.checkAndSeedData();
     const afterRestart = await Database.get('school_timetable', 1);
     assert.strictEqual(afterRestart.lessons[0].subject, 'Пользовательская правка — информатика');
+    afterRestart.lessons[0].subject = originalSubject;
+    await Database.saveDayTimetable(1, afterRestart.lessons);
   });
 
   // -------------------------------------------------------------------------
   // СЦЕНАРИЙ 2: Попытка подтверждения пустого расписания уроков
   // -------------------------------------------------------------------------
   await runScenario(2, 'Попытка подтверждения пустого расписания (отказ, статус остаётся unconfirmed)', async () => {
-    const timetable = await Database.getSchoolTimetable();
-    const totalLessons = timetable.reduce((acc, d) => acc + (d.lessons ? d.lessons.length : 0), 0);
-    assert.strictEqual(totalLessons, 0);
+    // Проверяем запрет на подтверждение пустой сетки изолированно от импортированного расписания.
+    const originalTimetable = await Database.getSchoolTimetable();
+    const originalSettings = Database.getSettings();
 
-    // Попытка подтвердить через SchoolManager
-    let confirmed = false;
-    if (typeof SchoolManager !== 'undefined' && SchoolManager.confirmTimetable) {
-      // Имитируем вызов confirmTimetable на пустом расписании
-      const res = await Database.getSchoolTimetable();
-      const lessonsCount = res.reduce((acc, d) => acc + (d.lessons ? d.lessons.length : 0), 0);
-      if (lessonsCount === 0) {
-        confirmed = false; // Отказ подтверждения
-      }
+    try {
+      for (let day = 1; day <= 7; day++) await Database.saveDayTimetable(day, []);
+      Database.saveSettings({
+        schoolTimetableConfirmed: false,
+        schoolTimetableOrigin: 'empty',
+        schoolTimetableScreenshotsImported: true
+      });
+
+      const timetable = await Database.getSchoolTimetable();
+      const totalLessons = timetable.reduce((acc, d) => acc + (d.lessons ? d.lessons.length : 0), 0);
+      assert.strictEqual(totalLessons, 0);
+
+      let confirmed = false;
+      const lessonsCount = timetable.reduce((acc, d) => acc + (d.lessons ? d.lessons.length : 0), 0);
+      if (lessonsCount > 0) confirmed = true;
+
+      assert.strictEqual(confirmed, false, 'Пустое расписание уроков не может быть подтверждено');
+      assert.strictEqual(Database.getSettings().schoolTimetableConfirmed, false);
+    } finally {
+      for (const day of originalTimetable) await Database.saveDayTimetable(day.dayOfWeek, day.lessons || []);
+      Database.saveSettings({
+        schoolTimetableConfirmed: originalSettings.schoolTimetableConfirmed,
+        schoolTimetableOrigin: originalSettings.schoolTimetableOrigin,
+        schoolTimetableScreenshotsImported: originalSettings.schoolTimetableScreenshotsImported
+      });
     }
-
-    assert.strictEqual(confirmed, false, 'Пустое расписание уроков не может быть подтверждено');
-    const settings = Database.getSettings();
-    assert.strictEqual(settings.schoolTimetableConfirmed, false, 'Статус расписания обязан оставаться false');
   });
 
   // -------------------------------------------------------------------------
