@@ -1,19 +1,21 @@
 /**
- * LifeOS — Модуль школьного расписания (school.js)
- * Управление уроками с 1 по 6 дни недели, поддержка 8-х уроков (Вт/Чт),
- * контрольных работ, отменённых занятий и автоматического пересчёта расписания.
+ * LifeOS — Модуль школьного расписания (school.js v1.1.1)
+ * Управление уроками с 1 по 6 дни недели.
+ * Полная поддержка 7-х и 8-х уроков (во Вт/Чт или в любой день),
+ * контрольных работ, отменённых занятий, разделение уроков и внешкольных занятий.
+ * Подтверждение расписания пользователем (защита от выдуманных данных).
  * Интеграция с TimeUtils (Europe/Moscow).
  */
 
 const SchoolManager = {
   currentDayTab: 1, // 1-Пн по умолчанию
   daysNames: [
-    { id: 1, name: 'Понедельник', short: 'ПН', lessonsCount: 6 },
-    { id: 2, name: 'Вторник', short: 'ВТ', lessonsCount: 8, has8th: true },
-    { id: 3, name: 'Среда', short: 'СР', lessonsCount: 6 },
-    { id: 4, name: 'Четверг', short: 'ЧТ', lessonsCount: 8, has8th: true },
-    { id: 5, name: 'Пятница', short: 'ПТ', lessonsCount: 6 },
-    { id: 6, name: 'Суббота', short: 'СБ', lessonsCount: 4 }
+    { id: 1, name: 'Понедельник', short: 'ПН' },
+    { id: 2, name: 'Вторник', short: 'ВТ', has8th: true },
+    { id: 3, name: 'Среда', short: 'СР' },
+    { id: 4, name: 'Четверг', short: 'ЧТ', has8th: true },
+    { id: 5, name: 'Пятница', short: 'ПТ' },
+    { id: 6, name: 'Суббота', short: 'СБ' }
   ],
 
   getTodayString() {
@@ -42,59 +44,116 @@ const SchoolManager = {
     this.render();
   },
 
+  async confirmTimetable() {
+    this.db.saveSettings({
+      schoolTimetableConfirmed: true,
+      schoolTimetableOrigin: 'user_confirmed'
+    });
+    const todayStr = this.getTodayString();
+    await AIPlanner.autoReplan(todayStr, this.db, 'Подтверждение школьного расписания');
+    this.render();
+    if (window.App && typeof window.App.refreshCurrentView === 'function') window.App.refreshCurrentView();
+  },
+
+  async markAsUnconfirmed() {
+    this.db.saveSettings({
+      schoolTimetableConfirmed: false,
+      schoolTimetableOrigin: 'unconfirmed'
+    });
+    this.render();
+  },
+
   async render() {
     const container = document.getElementById('school-content');
     if (!container) return;
 
+    const settings = this.db.getSettings();
+    const isConfirmed = !!settings.schoolTimetableConfirmed;
     const timetable = await this.db.getSchoolTimetable();
     const dayData = timetable.find(t => t.dayOfWeek === this.currentDayTab) || { dayOfWeek: this.currentDayTab, lessons: [] };
     const currentDayMeta = this.daysNames.find(d => d.id === this.currentDayTab) || this.daysNames[0];
 
-    // Подсчет окончания занятий
-    let lastTime = '—';
-    if (dayData.lessons && dayData.lessons.length > 0) {
-      const active = dayData.lessons.filter(l => !l.isCanceled);
-      if (active.length > 0) {
-        lastTime = active[active.length - 1].endTime;
-      }
+    const lessons = dayData.lessons || [];
+    const schoolLessons = lessons.filter(l => !l.isAfterSchool);
+    const afterSchoolActivities = lessons.filter(l => !!l.isAfterSchool);
+
+    // Подсчет времени окончания школы
+    let schoolEndTime = '—';
+    const activeSchool = schoolLessons.filter(l => !l.isCanceled);
+    if (activeSchool.length > 0) {
+      schoolEndTime = activeSchool[activeSchool.length - 1].endTime;
     }
 
+    // Проверка 7 и 8 уроков
+    const hasLesson8 = activeSchool.some(l => l.lessonNumber === 8 || l.isExtra);
+    const hasLesson7 = activeSchool.some(l => l.lessonNumber === 7);
+    const hasGap7 = hasLesson8 && !hasLesson7;
+
     let html = `
+      <!-- Статус подтверждения расписания -->
+      ${!isConfirmed ? `
+        <div class="school-unconfirmed-banner" style="background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 12px 16px; margin-bottom: 1rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap;">
+          <div style="color: #92400e; font-size: 0.95rem;">
+            <strong>⚠️ Расписание не подтверждено:</strong> Сейчас показан ориентировочный шаблон 10 класса. Пожалуйста, подтвердите его или внесите реальные уроки вашей школы.
+          </div>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <button class="btn btn-sm btn-primary" onclick="SchoolManager.confirmTimetable()">✓ Подтвердить расписание</button>
+            <button class="btn btn-sm btn-secondary" onclick="SchoolManager.openTemplateModal()">🔄 Сменить шаблон...</button>
+          </div>
+        </div>
+      ` : `
+        <div style="margin-bottom: 0.75rem; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+          <span class="badge badge-success" style="font-size: 0.85rem; padding: 6px 10px;">✓ Реальное расписание подтверждено</span>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-sm btn-outline-secondary" onclick="SchoolManager.markAsUnconfirmed()">Отметить как непроверенное</button>
+            <button class="btn btn-sm btn-secondary" onclick="SchoolManager.openTemplateModal()">🔄 Сменить шаблон...</button>
+          </div>
+        </div>
+      `}
+
       <div class="school-header-card">
         <div class="school-header-info">
           <h2>Школьное расписание 10 класса</h2>
-          <p class="text-muted">Реальное расписание уроков. Во вторник и четверг предусмотрен 8-й урок (до 15:30) с автоматической адаптацией дороги домой и обеда.</p>
+          <p class="text-muted">Точный график занятий. Поддерживаются 7-й и 8-й уроки, контрольные работы и внешкольные секции с автоматической синхронизацией дороги и обеда.</p>
         </div>
         <div class="school-day-badge">
-          <span>Окончание школы: <strong>${lastTime}</strong></span>
-          ${currentDayMeta.has8th ? '<span class="badge badge-accent">⚡ День с 8-м уроком (до 15:30)</span>' : ''}
+          <span>Окончание школы: <strong>${schoolEndTime}</strong></span>
+          ${hasLesson8 ? '<span class="badge badge-accent">⚡ Есть 8-й урок</span>' : ''}
+          ${hasGap7 ? '<span class="badge badge-warning" title="7-й урок отсутствует, перед 8-м окном">Окно перед 8-м</span>' : ''}
         </div>
       </div>
 
       <!-- Переключатель дней недели -->
       <div class="days-nav-tabs">
-        ${this.daysNames.map(d => `
-          <button class="day-tab-btn ${d.id === this.currentDayTab ? 'active' : ''}" onclick="SchoolManager.selectDay(${d.id})">
-            <span class="day-short">${d.short}</span>
-            <span class="day-full">${d.name}</span>
-            ${d.has8th ? '<span class="dot-accent" title="8-й урок">•</span>' : ''}
-          </button>
-        `).join('')}
+        ${this.daysNames.map(d => {
+          const dData = timetable.find(t => t.dayOfWeek === d.id);
+          const dHas8th = dData && dData.lessons && dData.lessons.some(l => (l.lessonNumber === 8 || l.isExtra) && !l.isCanceled);
+          return `
+            <button class="day-tab-btn ${d.id === this.currentDayTab ? 'active' : ''}" onclick="SchoolManager.selectDay(${d.id})">
+              <span class="day-short">${d.short}</span>
+              <span class="day-full">${d.name}</span>
+              ${dHas8th ? '<span class="dot-accent" title="8-й урок">•</span>' : ''}
+            </button>
+          `;
+        }).join('')}
       </div>
 
       <div class="school-lessons-container">
         <div class="lessons-header-actions">
           <h3>${currentDayMeta.name}</h3>
-          <button class="btn btn-primary btn-sm" onclick="SchoolManager.openAddLessonModal()">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
-            Добавить урок
-          </button>
+          <div style="display: flex; gap: 8px;">
+            ${hasGap7 ? `<button class="btn btn-sm btn-outline-primary" onclick="SchoolManager.openAddLesson7Modal()">+ Добавить 7-й урок</button>` : ''}
+            <button class="btn btn-primary btn-sm" onclick="SchoolManager.openAddLessonModal()">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+              Добавить занятие
+            </button>
+          </div>
         </div>
 
         <div class="lessons-list">
     `;
 
-    if (!dayData.lessons || dayData.lessons.length === 0) {
+    if (lessons.length === 0) {
       html += `
         <div class="empty-state">
           <p>В этот день уроки не запланированы.</p>
@@ -102,43 +161,93 @@ const SchoolManager = {
         </div>
       `;
     } else {
-      dayData.lessons.forEach((lesson, index) => {
-        const isCanceled = !!lesson.isCanceled;
-        const isExtra = !!lesson.isExtra || lesson.lessonNumber === 8;
+      // 1. Школьные уроки
+      if (schoolLessons.length > 0) {
+        schoolLessons.forEach((lesson) => {
+          const index = lessons.indexOf(lesson);
+          const isCanceled = !!lesson.isCanceled;
+          const isExtra = !!lesson.isExtra || lesson.lessonNumber >= 8;
 
+          html += `
+            <div class="lesson-card ${isCanceled ? 'lesson-canceled' : ''} ${isExtra ? 'lesson-extra' : ''}">
+              <div class="lesson-num-badge">${lesson.lessonNumber || (index + 1)}</div>
+              <div class="lesson-main-info">
+                <div class="lesson-title-row">
+                  <span class="lesson-subject ${isCanceled ? 'line-through' : ''}">${lesson.subject}</span>
+                  ${lesson.lessonNumber === 8 ? '<span class="badge badge-purple">8-й урок</span>' : ''}
+                  ${lesson.lessonNumber === 7 ? '<span class="badge badge-info">7-й урок</span>' : ''}
+                  ${lesson.isExtra && lesson.lessonNumber < 7 ? '<span class="badge badge-accent">Факультатив</span>' : ''}
+                  ${lesson.isTest ? '<span class="badge badge-danger">🔥 Контрольная</span>' : ''}
+                  ${isCanceled ? '<span class="badge badge-muted">Отменён</span>' : ''}
+                </div>
+                <div class="lesson-meta-row text-muted">
+                  <span>⏰ ${lesson.startTime} – ${lesson.endTime}</span>
+                  ${lesson.room ? `<span>🚪 Кабинет: ${lesson.room}</span>` : ''}
+                  ${lesson.notes ? `<span class="lesson-notes-text">📝 ${lesson.notes}</span>` : ''}
+                </div>
+              </div>
+              <div class="lesson-actions">
+                <button class="btn-icon" title="${isCanceled ? 'Восстановить урок' : 'Отметить отмену урока'}" onclick="SchoolManager.toggleCancelLesson(${index})">
+                  ${isCanceled ? '↩️' : '🚫'}
+                </button>
+                <button class="btn-icon" title="Отметить контрольную" onclick="SchoolManager.toggleTestLesson(${index})">
+                  📝
+                </button>
+                <button class="btn-icon" title="Редактировать" onclick="SchoolManager.openEditLessonModal(${index})">
+                  ✏️
+                </button>
+                <button class="btn-icon text-danger" title="Удалить урок" onclick="SchoolManager.deleteLesson(${index})">
+                  🗑️
+                </button>
+              </div>
+            </div>
+          `;
+        });
+      }
+
+      // 2. Внешкольные занятия (кружки, репетиторы, секции)
+      if (afterSchoolActivities.length > 0) {
         html += `
-          <div class="lesson-card ${isCanceled ? 'lesson-canceled' : ''} ${isExtra ? 'lesson-extra' : ''}">
-            <div class="lesson-num-badge">${lesson.lessonNumber || (index + 1)}</div>
-            <div class="lesson-main-info">
-              <div class="lesson-title-row">
-                <span class="lesson-subject ${isCanceled ? 'line-through' : ''}">${lesson.subject}</span>
-                ${isExtra ? '<span class="badge badge-purple">8-й урок / Практикум</span>' : ''}
-                ${lesson.isTest ? '<span class="badge badge-danger">🔥 Контрольная</span>' : ''}
-                ${isCanceled ? '<span class="badge badge-muted">Отменён</span>' : ''}
-              </div>
-              <div class="lesson-meta-row text-muted">
-                <span>⏰ ${lesson.startTime} – ${lesson.endTime}</span>
-                ${lesson.room ? `<span>🚪 Кабинет: ${lesson.room}</span>` : ''}
-                ${lesson.notes ? `<span class="lesson-notes-text">📝 ${lesson.notes}</span>` : ''}
-              </div>
-            </div>
-            <div class="lesson-actions">
-              <button class="btn-icon" title="${isCanceled ? 'Восстановить урок' : 'Отметить отмену урока'}" onclick="SchoolManager.toggleCancelLesson(${index})">
-                ${isCanceled ? '↩️' : '🚫'}
-              </button>
-              <button class="btn-icon" title="Отметить контрольную" onclick="SchoolManager.toggleTestLesson(${index})">
-                📝
-              </button>
-              <button class="btn-icon" title="Редактировать" onclick="SchoolManager.openEditLessonModal(${index})">
-                ✏️
-              </button>
-              <button class="btn-icon text-danger" title="Удалить урок" onclick="SchoolManager.deleteLesson(${index})">
-                🗑️
-              </button>
-            </div>
+          <div style="margin-top: 1.5rem; margin-bottom: 0.5rem; display: flex; align-items: center; justify-content: space-between;">
+            <h4 style="font-size: 1rem; color: #475569;">🎯 Внешкольные занятия (секции, кружки, репетиторы)</h4>
+            <span class="badge badge-muted">После школы</span>
           </div>
         `;
-      });
+
+        afterSchoolActivities.forEach((act) => {
+          const index = lessons.indexOf(act);
+          const isCanceled = !!act.isCanceled;
+
+          html += `
+            <div class="lesson-card" style="border-left: 4px solid #10b981; background: #f0fdf4;">
+              <div class="lesson-num-badge" style="background: #10b981; color: white;">★</div>
+              <div class="lesson-main-info">
+                <div class="lesson-title-row">
+                  <span class="lesson-subject ${isCanceled ? 'line-through' : ''}">${act.subject}</span>
+                  <span class="badge badge-success">Вне школы</span>
+                  ${isCanceled ? '<span class="badge badge-muted">Отменено</span>' : ''}
+                </div>
+                <div class="lesson-meta-row text-muted">
+                  <span>⏰ ${act.startTime} – ${act.endTime}</span>
+                  ${act.room ? `<span>📍 Место: ${act.room}</span>` : ''}
+                  ${act.notes ? `<span>📝 ${act.notes}</span>` : ''}
+                </div>
+              </div>
+              <div class="lesson-actions">
+                <button class="btn-icon" title="${isCanceled ? 'Восстановить' : 'Отменить'}" onclick="SchoolManager.toggleCancelLesson(${index})">
+                  ${isCanceled ? '↩️' : '🚫'}
+                </button>
+                <button class="btn-icon" title="Редактировать" onclick="SchoolManager.openEditLessonModal(${index})">
+                  ✏️
+                </button>
+                <button class="btn-icon text-danger" title="Удалить" onclick="SchoolManager.deleteLesson(${index})">
+                  🗑️
+                </button>
+              </div>
+            </div>
+          `;
+        });
+      }
     }
 
     html += `
@@ -180,7 +289,7 @@ const SchoolManager = {
   },
 
   async deleteLesson(index) {
-    if (!confirm('Удалить этот урок из расписания?')) return;
+    if (!confirm('Удалить это занятие из расписания?')) return;
     const timetable = await this.db.getSchoolTimetable();
     const dayData = timetable.find(t => t.dayOfWeek === this.currentDayTab);
     if (!dayData || !dayData.lessons[index]) return;
@@ -189,7 +298,7 @@ const SchoolManager = {
     await this.db.saveDayTimetable(this.currentDayTab, dayData.lessons);
 
     const todayStr = this.getTodayString();
-    await AIPlanner.autoReplan(todayStr, this.db, 'Удаление урока из расписания');
+    await AIPlanner.autoReplan(todayStr, this.db, 'Удаление занятия из расписания');
 
     this.render();
     if (window.App && typeof window.App.refreshCurrentView === 'function') window.App.refreshCurrentView();
@@ -197,6 +306,17 @@ const SchoolManager = {
 
   openAddLessonModal() {
     this.showLessonModal(null);
+  },
+
+  openAddLesson7Modal() {
+    this.showLessonModal({
+      lessonNumber: 7,
+      subject: '7-й урок / Факультатив',
+      startTime: '13:55',
+      endTime: '14:40',
+      isExtra: true,
+      isAfterSchool: false
+    });
   },
 
   async openEditLessonModal(index) {
@@ -223,46 +343,53 @@ const SchoolManager = {
     modal.innerHTML = `
       <div class="modal-card">
         <div class="modal-header">
-          <h3>${isEdit ? 'Редактировать урок' : 'Добавить урок в расписание'}</h3>
+          <h3>${isEdit ? 'Редактировать занятие' : 'Добавить занятие'}</h3>
           <button class="modal-close-btn" onclick="document.getElementById('${modalId}').remove()">&times;</button>
         </div>
         <form id="lesson-form" onsubmit="SchoolManager.handleLessonFormSubmit(event, ${editIndex})">
           <div class="form-group">
-            <label>Предмет *</label>
-            <input type="text" id="lesson-subject-input" class="form-control" required value="${lessonData ? lessonData.subject : ''}" placeholder="Алгебра (профиль)">
+            <label>Предмет / Название занятия *</label>
+            <input type="text" id="lesson-subject-input" class="form-control" required value="${lessonData ? lessonData.subject : ''}" placeholder="Алгебра (профиль) или Секция плавания">
           </div>
 
           <div class="form-row">
             <div class="form-group col">
-              <label>Номер урока</label>
-              <input type="number" id="lesson-num-input" class="form-control" min="1" max="10" value="${lessonData ? lessonData.lessonNumber : 1}">
+              <label>Номер урока (1–10)</label>
+              <input type="number" id="lesson-num-input" class="form-control" min="1" max="10" value="${lessonData ? (lessonData.lessonNumber || 1) : 1}">
             </div>
             <div class="form-group col">
-              <label>Кабинет</label>
-              <input type="text" id="lesson-room-input" class="form-control" value="${lessonData ? (lessonData.room || '') : ''}" placeholder="204">
+              <label>Кабинет / Место</label>
+              <input type="text" id="lesson-room-input" class="form-control" value="${lessonData ? (lessonData.room || '') : ''}" placeholder="204 или Бассейн">
             </div>
           </div>
 
           <div class="form-row">
             <div class="form-group col">
-              <label>Начало *</label>
+              <label>Время начала *</label>
               <input type="time" id="lesson-start-input" class="form-control" required value="${lessonData ? lessonData.startTime : defaultStartTime}">
             </div>
             <div class="form-group col">
-              <label>Окончание *</label>
+              <label>Время окончания *</label>
               <input type="time" id="lesson-end-input" class="form-control" required value="${lessonData ? lessonData.endTime : defaultEndTime}">
             </div>
           </div>
 
           <div class="form-group">
-            <label>Заметки / Домашнее задание</label>
+            <label>Заметки / ДЗ к уроку</label>
             <input type="text" id="lesson-notes-input" class="form-control" value="${lessonData ? (lessonData.notes || '') : ''}" placeholder="Параграф 14, номера 3-5">
           </div>
 
           <div class="form-checkbox-row">
             <label class="checkbox-label">
               <input type="checkbox" id="lesson-extra-input" ${lessonData && lessonData.isExtra ? 'checked' : ''}>
-              <span>Это 8-й урок / факультатив (смещает окончание школы до 15:30)</span>
+              <span>Факультатив / 8-й урок (в рамках школьного дня)</span>
+            </label>
+          </div>
+
+          <div class="form-checkbox-row">
+            <label class="checkbox-label">
+              <input type="checkbox" id="lesson-afterschool-input" ${lessonData && lessonData.isAfterSchool ? 'checked' : ''}>
+              <span>Внешкольное занятие (кружок, спортсекция, репетитор после школы)</span>
             </label>
           </div>
 
@@ -301,6 +428,7 @@ const SchoolManager = {
       room: document.getElementById('lesson-room-input').value.trim(),
       notes: document.getElementById('lesson-notes-input').value.trim(),
       isExtra: document.getElementById('lesson-extra-input').checked,
+      isAfterSchool: document.getElementById('lesson-afterschool-input').checked,
       isTest: document.getElementById('lesson-test-input').checked,
       isCanceled: false
     };
@@ -319,12 +447,97 @@ const SchoolManager = {
     const modal = document.getElementById('lesson-form-modal');
     if (modal) modal.remove();
 
-    // Автоматическое перепланирование сегодняшнего дня
     const todayStr = this.getTodayString();
     await AIPlanner.autoReplan(todayStr, this.db, 'Редактирование расписания уроков');
 
     this.render();
     if (window.App && typeof window.App.refreshCurrentView === 'function') window.App.refreshCurrentView();
+  },
+
+  // ==========================================
+  // МОДАЛЬНОЕ ОКНО ВЫБОРА ШАБЛОНА С ПРЕВЬЮ
+  // ==========================================
+  openTemplateModal() {
+    const modalId = 'template-selector-modal';
+    let modal = document.getElementById(modalId);
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = modalId;
+      modal.className = 'modal-backdrop';
+      document.body.appendChild(modal);
+    }
+
+    modal.innerHTML = `
+      <div class="modal-card modal-card-lg">
+        <div class="modal-header">
+          <h3>Выбор шаблона школьного расписания</h3>
+          <button class="modal-close-btn" onclick="document.getElementById('${modalId}').remove()">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p class="text-muted">Выберите базовый шаблон для быстрой настройки. Вы сможете отредактировать любые уроки после применения.</p>
+          
+          <div class="templates-grid" style="display: grid; gap: 1rem; margin-top: 1rem;">
+            <div class="template-choice-card" style="border: 2px solid #e2e8f0; border-radius: 8px; padding: 1rem; cursor: pointer;" onclick="SchoolManager.previewTemplate('6day')">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h4>📅 10 класс: 6-дневка (с 8-ми уроками во Вт и Чт)</h4>
+                <span class="badge badge-accent">Рекомендуемый</span>
+              </div>
+              <p class="text-muted" style="margin: 0.5rem 0;">Понедельник–Суббота. Вт/Чт уроки до 15:30 (профильный практикум и IT-олимпиады). Суббота до 12:40.</p>
+              <button class="btn btn-sm btn-outline-primary" onclick="SchoolManager.applyTemplate('6day'); event.stopPropagation();">Применить этот шаблон</button>
+            </div>
+
+            <div class="template-choice-card" style="border: 2px solid #e2e8f0; border-radius: 8px; padding: 1rem; cursor: pointer;" onclick="SchoolManager.previewTemplate('5day')">
+              <h4>📅 10 класс: 5-дневка (Пн–Пт, без субботы)</h4>
+              <p class="text-muted" style="margin: 0.5rem 0;">Понедельник–Пятница по 6–7 уроков. Суббота и воскресенье — выходные дни для подготовки и отдыха.</p>
+              <button class="btn btn-sm btn-outline-primary" onclick="SchoolManager.applyTemplate('5day'); event.stopPropagation();">Применить этот шаблон</button>
+            </div>
+
+            <div class="template-choice-card" style="border: 2px solid #e2e8f0; border-radius: 8px; padding: 1rem; cursor: pointer;" onclick="SchoolManager.previewTemplate('empty')">
+              <h4>📝 Чистый лист (пустое расписание)</h4>
+              <p class="text-muted" style="margin: 0.5rem 0;">Очистить все дни недели и вручную внести только свои реальные уроки.</p>
+              <button class="btn btn-sm btn-outline-danger" onclick="SchoolManager.applyTemplate('empty'); event.stopPropagation();">Очистить всё и начать с нуля</button>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" onclick="document.getElementById('${modalId}').remove()">Отмена</button>
+        </div>
+      </div>
+    `;
+  },
+
+  async applyTemplate(type) {
+    if (!confirm('Вы уверены, что хотите применить этот шаблон? Текущие уроки будут заменены выбранным шаблоном с сохранением резервной копии.')) {
+      return;
+    }
+
+    // Сохраняем бэкап настроек перед заменой
+    await this.db.exportAllData();
+
+    if (type === '6day') {
+      await this.db.seedRealisticSchoolTimetable();
+      this.db.saveSettings({ schoolTimetableConfirmed: false, schoolTimetableOrigin: 'template_6day' });
+    } else if (type === '5day') {
+      await this.db.seedRealisticSchoolTimetable();
+      // Очищаем субботу
+      await this.db.saveDayTimetable(6, []);
+      this.db.saveSettings({ schoolTimetableConfirmed: false, schoolTimetableOrigin: 'template_5day' });
+    } else if (type === 'empty') {
+      for (let d = 1; d <= 6; d++) {
+        await this.db.saveDayTimetable(d, []);
+      }
+      this.db.saveSettings({ schoolTimetableConfirmed: true, schoolTimetableOrigin: 'user_empty' });
+    }
+
+    const modal = document.getElementById('template-selector-modal');
+    if (modal) modal.remove();
+
+    const todayStr = this.getTodayString();
+    await AIPlanner.autoReplan(todayStr, this.db, 'Смена шаблона школьного расписания');
+
+    this.render();
+    if (window.App && typeof window.App.refreshCurrentView === 'function') window.App.refreshCurrentView();
+    alert('Шаблон успешно применён! Проверьте и при необходимости скорректируйте уроки.');
   }
 };
 

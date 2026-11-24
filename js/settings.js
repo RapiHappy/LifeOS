@@ -66,12 +66,12 @@ const SettingsManager = {
             <div class="form-row">
               <div class="form-group col">
                 <label>Игры на ПК (минут ежедневно)</label>
-                <input type="number" id="set-game-min" class="form-control" min="30" max="120" value="${s.gameMinutes || 60}" required>
+                <input type="number" id="set-game-min" class="form-control" min="30" max="120" value="${s.gameMinutes !== undefined ? s.gameMinutes : 60}" required>
                 <small class="text-muted">Запланированный блок, не сокращается из-за уроков</small>
               </div>
               <div class="form-group col">
                 <label>Спорт / Разминка (минут)</label>
-                <input type="number" id="set-sport-min" class="form-control" min="15" max="60" value="${s.sportMinutes || 25}" required>
+                <input type="number" id="set-sport-min" class="form-control" min="15" max="60" value="${s.sportMinutes !== undefined ? s.sportMinutes : 30}" required>
                 <small class="text-muted">Двигательная активность для осанки и здоровья</small>
               </div>
             </div>
@@ -79,11 +79,11 @@ const SettingsManager = {
             <div class="form-row">
               <div class="form-group col">
                 <label>Ужин с родителями / Семья (минут)</label>
-                <input type="number" id="set-family-min" class="form-control" min="15" max="90" value="${s.familyMinutes || 30}" required>
+                <input type="number" id="set-family-min" class="form-control" min="15" max="90" value="${s.familyMinutes !== undefined ? s.familyMinutes : 40}" required>
               </div>
               <div class="form-group col">
                 <label>Отдых без ПК перед сном (минут)</label>
-                <input type="number" id="set-rest-min" class="form-control" min="20" max="90" value="${s.offlineRestMinutes || 45}" required>
+                <input type="number" id="set-rest-min" class="form-control" min="20" max="90" value="${s.offlineRestMinutes !== undefined ? s.offlineRestMinutes : 30}" required>
               </div>
             </div>
 
@@ -164,6 +164,12 @@ const SettingsManager = {
             <div>${notifStatusBadges[notifStatus] || ''}</div>
           </div>
 
+          <div style="background: #f8fafc; border-left: 4px solid #3b82f6; padding: 12px 14px; border-radius: 6px; margin: 12px 0; font-size: 13px; line-height: 1.5;">
+            <strong>ℹ️ Честная архитектура уведомлений (Web Notifications vs Web Push):</strong><br>
+            • <strong>Web Notifications API:</strong> работает локально в браузере и отображает уведомления Windows, пока вкладка LifeOS открыта или свёрнута в трей.<br>
+            • <strong>Web Push API:</strong> для доставки при <em>полностью закрытом браузере</em> требует серверного бэкенда (сервер очередей, VAPID-ключи, браузерный Push Service). На статическом GitHub Pages без бэкенда Web Push технически невозможен. LifeOS надёжно фиксирует события и показывает пропущенные уведомления при возвращении во вкладку.
+          </div>
+
           <div class="notif-actions-bar">
             ${notifStatus !== 'granted' ? `
               <button class="btn btn-primary btn-sm" onclick="SettingsManager.requestNotifPermission()">
@@ -215,6 +221,40 @@ const SettingsManager = {
 
             <button type="submit" class="btn btn-primary btn-sm">Сохранить настройки уведомлений</button>
           </form>
+
+          <!-- Журнал истории уведомлений -->
+          <div style="margin-top: 2rem; border-top: 1px solid #e2e8f0; pt-3;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+              <h4 style="margin: 0; font-size: 14px;">📋 Журнал последних уведомлений (до 50 записей)</h4>
+              <button class="btn btn-outline-secondary btn-sm" onclick="SettingsManager.clearNotifHistory()">Очистить журнал</button>
+            </div>
+            ${(() => {
+              const history = (typeof NotificationsManager !== 'undefined' && NotificationsManager.getNotificationHistory)
+                ? NotificationsManager.getNotificationHistory().slice(0, 5)
+                : [];
+              if (history.length === 0) {
+                return '<div class="text-muted" style="font-size: 13px;">Журнал пуст. Уведомления ещё не отправлялись.</div>';
+              }
+              return `
+                <div style="display: flex; flex-direction: column; gap: 6px;">
+                  ${history.map(item => `
+                    <div style="display: flex; justify-content: space-between; align-items: center; font-size: 12px; background: #f8fafc; padding: 6px 10px; border-radius: 4px;">
+                      <div>
+                        <strong>${item.title}</strong>
+                        <span class="text-muted" style="margin-left: 6px;">${item.body ? item.body.substring(0, 45) + '...' : ''}</span>
+                      </div>
+                      <div style="display: flex; gap: 8px; align-items: center;">
+                        <span class="badge ${item.status === 'delivered' ? 'badge-success' : (item.status === 'missed' ? 'badge-warning' : 'badge-primary')}">
+                          ${item.status === 'delivered' ? 'Доставлено' : (item.status === 'missed' ? 'Пропущено' : 'Вкладка')}
+                        </span>
+                        <span class="text-muted">${item.timestamp ? item.timestamp.split('T')[1].substring(0, 5) : ''}</span>
+                      </div>
+                    </div>
+                  `).join('')}
+                </div>
+              `;
+            })()}
+          </div>
         </div>
 
         <!-- БЛОК 4: ИИ-ИНТЕГРАЦИЯ (БЕЗОПАСНЫЙ СЕРВЕРНЫЙ ЭНДПОИНТ) -->
@@ -235,6 +275,58 @@ const SettingsManager = {
 
             <button type="submit" class="btn btn-primary btn-sm">Сохранить эндпоинт ИИ</button>
           </form>
+
+          ${(() => {
+            const hasLegacy = typeof localStorage !== 'undefined' && localStorage.getItem('lifeos_settings_legacy_backup');
+            if (hasLegacy) {
+              return `
+                <div style="margin-top: 12px; padding: 10px 14px; background: #fffbeb; border: 1px solid #fef3c7; border-radius: 6px; font-size: 13px;">
+                  🔒 <strong>Архивная копия устаревшего API-ключа:</strong> обнаружена и изолирована от активных настроек.<br>
+                  <button type="button" class="btn btn-outline-danger btn-sm" style="margin-top: 6px;" onclick="SettingsManager.deleteLegacyBackup()">
+                    🗑️ Очистить архивный бэкап
+                  </button>
+                </div>
+              `;
+            }
+            return '<div style="margin-top: 10px; font-size: 13px; color: #10b981;">✅ В браузере отсутствуют секретные API-ключи. Приложение полностью безопасно.</div>';
+          })()}
+        </div>
+
+        <!-- БЛОК 4.5: ШКОЛЬНОЕ РАСПИСАНИЕ И СТАТУС ПРОВЕРКИ -->
+        <div class="section-card">
+          <div class="section-card-header">
+            <div>
+              <h3>Школьное расписание: статус и происхождение</h3>
+              <p class="text-muted">Управление подтверждением расписания уроков 10 класса.</p>
+            </div>
+            <div>
+              <span class="badge ${s.schoolTimetableConfirmed ? 'badge-success' : 'badge-warning'}">
+                ${s.schoolTimetableConfirmed ? '✓ Расписание подтверждено' : '⚠️ Требуется проверка'}
+              </span>
+            </div>
+          </div>
+
+          <div style="font-size: 13px; color: #64748b; margin-bottom: 12px;">
+            Происхождение расписания: <strong>${
+              s.schoolTimetableOrigin === 'user_customized' ? 'Индивидуально отредактировано' :
+              (s.schoolTimetableOrigin === 'user_confirmed' ? 'Подтверждено пользователем' : 'Типовой шаблон 10 класса (не проверено)')
+            }</strong>
+          </div>
+
+          <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+            ${!s.schoolTimetableConfirmed ? `
+              <button class="btn btn-primary btn-sm" onclick="SettingsManager.confirmSchoolTimetable()">
+                ✓ Подтвердить текущее расписание
+              </button>
+            ` : `
+              <button class="btn btn-outline-secondary btn-sm" onclick="SettingsManager.unconfirmSchoolTimetable()">
+                Отметить как непроверенное
+              </button>
+            `}
+            <button class="btn btn-secondary btn-sm" onclick="if (window.App) window.App.switchView('school')">
+              🏫 Перейти к редактированию уроков
+            </button>
+          </div>
         </div>
 
         <!-- БЛОК 5: ДЕМО-РЕЖИМ И ОЧИСТКА ДАННЫХ -->
@@ -313,9 +405,9 @@ const SettingsManager = {
       wakeTime: document.getElementById('set-wake-time').value,
       sleepStart: document.getElementById('set-sleep-start').value,
       gameMinutes: Number(document.getElementById('set-game-min').value) || 60,
-      sportMinutes: Number(document.getElementById('set-sport-min').value) || 25,
-      familyMinutes: Number(document.getElementById('set-family-min').value) || 30,
-      offlineRestMinutes: Number(document.getElementById('set-rest-min').value) || 45,
+      sportMinutes: Number(document.getElementById('set-sport-min').value) || 30,
+      familyMinutes: Number(document.getElementById('set-family-min').value) || 40,
+      offlineRestMinutes: Number(document.getElementById('set-rest-min').value) || 30,
       activeMode: document.getElementById('set-active-mode').value
     };
 
@@ -324,6 +416,45 @@ const SettingsManager = {
     await AIPlanner.autoReplan(todayStr, this.db, 'Изменение режима дня в настройках');
 
     alert('Настройки режима дня сохранены! Расписание обновлено.');
+    this.render();
+    if (window.App && typeof window.App.refreshCurrentView === 'function') window.App.refreshCurrentView();
+  },
+
+  clearNotifHistory() {
+    if (typeof NotificationsManager !== 'undefined' && NotificationsManager.clearNotificationHistory) {
+      NotificationsManager.clearNotificationHistory();
+    }
+    this.render();
+  },
+
+  deleteLegacyBackup() {
+    if (confirm('Удалить архивную резервную копию ключа?')) {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem('lifeos_settings_legacy_backup');
+      }
+      alert('Архивный бэкап удален!');
+      this.render();
+    }
+  },
+
+  async confirmSchoolTimetable() {
+    this.db.saveSettings({
+      schoolTimetableConfirmed: true,
+      schoolTimetableOrigin: 'user_confirmed'
+    });
+    const todayStr = this.getTodayString();
+    await AIPlanner.autoReplan(todayStr, this.db, 'Подтверждение расписания уроков');
+    alert('Расписание уроков успешно подтверждено!');
+    this.render();
+    if (window.App && typeof window.App.refreshCurrentView === 'function') window.App.refreshCurrentView();
+  },
+
+  async unconfirmSchoolTimetable() {
+    this.db.saveSettings({
+      schoolTimetableConfirmed: false,
+      schoolTimetableOrigin: 'unconfirmed_template'
+    });
+    alert('Расписание уроков отмечено как требующее проверки.');
     this.render();
     if (window.App && typeof window.App.refreshCurrentView === 'function') window.App.refreshCurrentView();
   },

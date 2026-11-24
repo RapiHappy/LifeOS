@@ -69,9 +69,10 @@ const Scheduler = {
       }
     }
 
-    // Проверка олимпиад
+    // Проверка олимпиад (только подтверждённые пользователем реальные олимпиады, НЕ шаблоны!)
     const upcomingOly = olympiadsList.find(o => {
       if (!o.date) return false;
+      if (o.isTemplate === true || o.isConfirmed === false) return false;
       const diff = _TimeUtilsScheduler
         ? _TimeUtilsScheduler.diffDays(o.date, dateStr)
         : Math.ceil((new Date(o.date) - new Date(dateStr)) / (1000 * 60 * 60 * 24));
@@ -116,13 +117,14 @@ const Scheduler = {
    * @param {Object} db - экземпляр Database
    * @returns {Promise<Object>} объект с расписанием
    */
-  async generateDailySchedule(dateStr, db) {
-    const settings = db.getSettings();
-    const homework = await db.getAllHomework();
-    const timetable = await db.getSchoolTimetable();
-    const projects = await db.getProjects();
-    const olympiads = await db.getOlympiads();
-    const egeTopics = await db.getEgeTopics();
+  async generateDailySchedule(dateStr, db, customSettings = null) {
+    const baseSettings = db ? db.getSettings() : {};
+    const settings = customSettings ? { ...baseSettings, ...customSettings } : baseSettings;
+    const homework = db ? await db.getAllHomework() : [];
+    const timetable = db ? await db.getSchoolTimetable() : [];
+    const projects = db ? await db.getProjects() : [];
+    const olympiads = db ? await db.getOlympiads() : [];
+    const egeTopics = db ? await db.getEgeTopics() : [];
 
     const dayOfWeek = _TimeUtilsScheduler
       ? _TimeUtilsScheduler.getDayOfWeek(dateStr)
@@ -265,27 +267,28 @@ const Scheduler = {
     tasks.push(yastuBlock);
     markOccupied(yastuStartMin, yastuEndMin, 'yastu');
 
-    // 5. ЗАЩИЩЁННЫЕ БЛОКИ ВТОРОЙ ПОЛОВИНЫ ДНЯ:
-    const gameDuration = Number(settings.gameMinutes) || 60;
-    const sportDuration = Number(settings.sportMinutes) || 25;
-    const familyDuration = Number(settings.familyMinutes) || 30;
-    const offlineRestDuration = Number(settings.offlineRestMinutes) || 45;
+    // 5. ЗАЩИЩЁННЫЕ БЛОКИ ВТОРОЙ ПОЛОВИНЫ ДНЯ (строго по настройкам пользователя):
+    const gameDuration = settings.gameMinutes !== undefined ? Number(settings.gameMinutes) : 60;
+    const sportDuration = settings.sportMinutes !== undefined ? Number(settings.sportMinutes) : 30;
+    const familyDuration = settings.familyMinutes !== undefined ? Number(settings.familyMinutes) : 40;
+    const offlineRestDuration = settings.offlineRestMinutes !== undefined ? Number(settings.offlineRestMinutes) : 30;
 
-    // Сон: 21:30 - 06:00
+    // Сон: sleepMin - wakeMin (например, 21:30 - 06:00 = 8ч 30мин)
+    const sleepDuration = (1440 - sleepMin) + wakeMin;
     tasks.push({
       id: `sleep_${dateStr}`,
-      title: 'Сон и восстановление (8ч 30мин)',
-      subtitle: `Отбой в ${settings.sleepStart || '21:30'}, подъём в ${settings.wakeTime || '06:00'}`,
+      title: `Сон и восстановление (${Math.floor(sleepDuration / 60)}ч ${sleepDuration % 60 ? (sleepDuration % 60) + 'мин' : ''})`.trim(),
+      subtitle: `Отбой в ${this.minToTime(sleepMin)}, подъём в ${this.minToTime(wakeMin)}`,
       startTime: this.minToTime(sleepMin),
-      endTime: settings.wakeTime || '06:00',
-      durationMinutes: 510,
+      endTime: this.minToTime(wakeMin),
+      durationMinutes: sleepDuration,
       category: 'sleep',
       status: 'pending',
       isProtected: true,
       description: 'Строго охраняемый физиологический сон для высокой продуктивности.'
     });
 
-    // Отдых без ПК перед сном: (sleepMin - offlineRestDuration) .. sleepMin (20:45 - 21:30)
+    // Отдых без ПК перед сном: (sleepMin - offlineRestDuration) .. sleepMin (например, 21:00 - 21:30)
     const restStartMin = sleepMin - offlineRestDuration;
     tasks.push({
       id: `offline_rest_${dateStr}`,
@@ -301,7 +304,7 @@ const Scheduler = {
     });
     markOccupied(restStartMin, sleepMin, 'offline_rest');
 
-    // Игры на ПК: 60 минут (19:45 - 20:45)
+    // Игры на ПК: (restStartMin - gameDuration) .. restStartMin (например, 20:00 - 21:00)
     const gameStartMin = restStartMin - gameDuration;
     tasks.push({
       id: `pc_games_${dateStr}`,
@@ -317,7 +320,7 @@ const Scheduler = {
     });
     markOccupied(gameStartMin, restStartMin, 'gaming');
 
-    // Семейное время (ужин с родителями): 30 мин (19:15 - 19:45)
+    // Семейное время (ужин с родителями): 40 мин (например, 19:20 - 20:00)
     const familyStartMin = gameStartMin - familyDuration;
     tasks.push({
       id: `family_dinner_${dateStr}`,
@@ -333,7 +336,7 @@ const Scheduler = {
     });
     markOccupied(familyStartMin, gameStartMin, 'family');
 
-    // Спорт (25 минут): размещаем в свободное окно, избегая наложения на ясту
+    // Спорт (30 минут по умолчанию): размещаем в свободное окно, избегая наложения на ясту
     let sportStartMin = yastuEndMin + 10;
     if (sportStartMin + sportDuration > familyStartMin) {
       sportStartMin = familyStartMin - sportDuration - 10;
@@ -342,7 +345,12 @@ const Scheduler = {
     if (sportStartMin < yastuEndMin && (sportStartMin + sportDuration) > yastuStartMin) {
       sportStartMin = yastuStartMin - sportDuration - 10;
     }
-    sportStartMin = Math.max(freeTimeStartMin + 10, sportStartMin);
+    if (sportStartMin < freeTimeStartMin + 10) {
+      sportStartMin = freeTimeStartMin + 10;
+      if (sportStartMin < yastuEndMin && (sportStartMin + sportDuration) > yastuStartMin) {
+        sportStartMin = yastuEndMin + 10;
+      }
+    }
 
     tasks.push({
       id: `sport_${dateStr}`,
@@ -640,8 +648,16 @@ const Scheduler = {
     // Сортировка всех задач по времени начала
     tasks.sort((a, b) => this.timeToMin(a.startTime) - this.timeToMin(b.startTime));
 
-    // Проверка целостности и отсутствия конфликтов
-    const integrityCheck = this.verifyScheduleIntegrity(tasks, wakeMin, sleepMin);
+    // Проверка целостности и отсутствия конфликтов с проверкой всех защищённых блоков
+    const integrityCheck = this.verifyScheduleIntegrity(tasks, {
+      ...settings,
+      wakeMin,
+      sleepMin,
+      sportMinutes: sportDuration,
+      gameMinutes: gameDuration,
+      familyMinutes: familyDuration,
+      offlineRestMinutes: offlineRestDuration
+    });
 
     const scheduleResult = {
       date: dateStr,
@@ -654,7 +670,7 @@ const Scheduler = {
       unallocatedTasks: unallocatedTasks,
       isOverloaded: unallocatedMinutes > 0,
       overloadWarning: unallocatedMinutes > 0
-        ? `⚠️ Внимание: учебная нагрузка превышает доступное время до отбоя (не поместилось ${unallocatedMinutes} мин). Необязательные задачи перенесены, сон в 21:30 и защищённые блоки соблюдены.`
+        ? `⚠️ Внимание: учебная нагрузка превышает доступное время до отбоя (не поместилось ${unallocatedMinutes} мин). Не поместившиеся задачи: ${unallocatedTasks.map(u => `${u.title} (${u.unallocatedMinutes} мин)`).join(', ')}. Сон в ${settings.sleepStart || '21:30'} и защищённые блоки соблюдены.`
         : null,
       integrity: integrityCheck,
       generatedAt: new Date().toISOString(),
@@ -667,43 +683,135 @@ const Scheduler = {
   /**
    * Полная верификация расписания: проверка наложений, границ и защищённых интервалов
    * @param {Array|Object} tasksOrSchedule - массив задач или объект расписания
-   * @param {number} wakeMin
-   * @param {number} sleepMin
+   * @param {Object|number} settingsOrWakeMin - объект настроек или wakeMin
+   * @param {number} maybeSleepMin
    * @returns {{ valid: boolean, errors: string[] }}
    */
-  verifyScheduleIntegrity(tasksOrSchedule, wakeMin = 360, sleepMin = 1290) {
+  verifyScheduleIntegrity(tasksOrSchedule, settingsOrWakeMin = 360, maybeSleepMin = 1290) {
     const tasks = Array.isArray(tasksOrSchedule)
       ? tasksOrSchedule
       : (tasksOrSchedule && Array.isArray(tasksOrSchedule.tasks) ? tasksOrSchedule.tasks : []);
     const errors = [];
 
-    for (let i = 0; i < tasks.length; i++) {
-      const cur = tasks[i];
+    let settings = {};
+    let wakeMin = 360;
+    let sleepMin = 1290;
+
+    if (typeof settingsOrWakeMin === 'object' && settingsOrWakeMin !== null) {
+      settings = settingsOrWakeMin;
+      wakeMin = settings.wakeTime ? this.timeToMin(settings.wakeTime) : (typeof settings.wakeMin === 'number' ? settings.wakeMin : 360);
+      sleepMin = settings.sleepStart ? this.timeToMin(settings.sleepStart) : (typeof settings.sleepMin === 'number' ? settings.sleepMin : 1290);
+    } else {
+      wakeMin = typeof settingsOrWakeMin === 'number' ? settingsOrWakeMin : 360;
+      sleepMin = typeof maybeSleepMin === 'number' ? maybeSleepMin : 1290;
+    }
+
+    const expectedSport = settings.sportMinutes !== undefined ? Number(settings.sportMinutes) : 30;
+    const expectedGame = settings.gameMinutes !== undefined ? Number(settings.gameMinutes) : 60;
+    const expectedFamily = settings.familyMinutes !== undefined ? Number(settings.familyMinutes) : 40;
+    const expectedRest = settings.offlineRestMinutes !== undefined ? Number(settings.offlineRestMinutes) : 30;
+    const expectedPrayer = settings.prayerDuration !== undefined ? Number(settings.prayerDuration) : 20;
+    const expectedSleep = (1440 - sleepMin) + wakeMin;
+
+    // 1. Проверка продолжительности и пересечений задач между собой
+    const nonSleepTasks = tasks.filter(t => t.category !== 'sleep').slice();
+    nonSleepTasks.sort((a, b) => this.timeToMin(a.startTime) - this.timeToMin(b.startTime));
+
+    for (let i = 0; i < nonSleepTasks.length; i++) {
+      const cur = nonSleepTasks[i];
       const start = this.timeToMin(cur.startTime);
       const end = this.timeToMin(cur.endTime);
 
-      if (end <= start && cur.category !== 'sleep') {
+      if (end <= start) {
         errors.push(`Отрицательная или нулевая продолжительность: "${cur.title}" (${cur.startTime}–${cur.endTime})`);
       }
 
-      // Проверка наложения с предыдущей задачей
       if (i > 0) {
-        const prev = tasks[i - 1];
+        const prev = nonSleepTasks[i - 1];
         const prevEnd = this.timeToMin(prev.endTime);
-        if (prevEnd > start && prev.category !== 'sleep') {
+        if (prevEnd > start) {
           errors.push(`Временное пересечение: "${prev.title}" (до ${prev.endTime}) накладывается на "${cur.title}" (с ${cur.startTime})`);
         }
       }
     }
 
-    // Проверка обязательных защищенных блоков
-    const hasSleep = tasks.some(t => t.category === 'sleep');
-    const hasPrayer = tasks.some(t => t.category === 'prayer');
-    const hasGaming = tasks.some(t => t.category === 'gaming');
+    // 2. Проверка: ни одна учебная или личная задача не накладывается на школьные уроки
+    const schoolLessons = tasks.filter(t => t.category === 'school');
+    const nonSchoolTasks = tasks.filter(t => t.category !== 'school' && t.category !== 'sleep');
+    for (const lesson of schoolLessons) {
+      const lStart = this.timeToMin(lesson.startTime);
+      const lEnd = this.timeToMin(lesson.endTime);
+      for (const other of nonSchoolTasks) {
+        const oStart = this.timeToMin(other.startTime);
+        const oEnd = this.timeToMin(other.endTime);
+        if (Math.max(lStart, oStart) < Math.min(lEnd, oEnd)) {
+          errors.push(`Задача "${other.title}" (${other.startTime}–${other.endTime}) накладывается на школьный урок "${lesson.title}" (${lesson.startTime}–${lesson.endTime})`);
+        }
+      }
+    }
 
-    if (!hasSleep) errors.push('Отсутствует защищённый блок сна (21:30–06:00)!');
-    if (!hasPrayer) errors.push('Отсутствует защищённый блок намаза ясту!');
-    if (!hasGaming) errors.push('Отсутствует защищённый блок игр на ПК (60 мин)!');
+    // 3. Проверка обязательных защищенных блоков и их точной длительности
+    const sleepTask = tasks.find(t => t.category === 'sleep');
+    if (!sleepTask) {
+      errors.push('Отсутствует защищённый блок сна!');
+    } else {
+      const sStart = this.timeToMin(sleepTask.startTime);
+      const sEnd = this.timeToMin(sleepTask.endTime);
+      const sleepDur = Number(sleepTask.durationMinutes) || (sEnd < sStart ? (1440 - sStart + sEnd) : (sEnd - sStart));
+      if (sleepDur !== expectedSleep) {
+        errors.push(`Длительность сна (${sleepDur} мин) не соответствует настройкам (${expectedSleep} мин)`);
+      }
+    }
+
+    const sportTask = tasks.find(t => t.category === 'sport');
+    if (!sportTask) {
+      errors.push('Отсутствует защищённый блок спорта!');
+    } else {
+      const sportDur = Number(sportTask.durationMinutes) || (this.timeToMin(sportTask.endTime) - this.timeToMin(sportTask.startTime));
+      if (sportDur !== expectedSport) {
+        errors.push(`Длительность блока спорта (${sportDur} мин) не соответствует настройкам (${expectedSport} мин)`);
+      }
+    }
+
+    const gameTask = tasks.find(t => t.category === 'gaming');
+    if (!gameTask) {
+      errors.push('Отсутствует защищённый блок игр на ПК!');
+    } else {
+      const gameDur = Number(gameTask.durationMinutes) || (this.timeToMin(gameTask.endTime) - this.timeToMin(gameTask.startTime));
+      if (gameDur !== expectedGame) {
+        errors.push(`Длительность блока игр (${gameDur} мин) не соответствует настройкам (${expectedGame} мин)`);
+      }
+    }
+
+    const familyTask = tasks.find(t => t.category === 'family');
+    if (!familyTask) {
+      errors.push('Отсутствует защищённый блок семейного времени / ужина!');
+    } else {
+      const familyDur = Number(familyTask.durationMinutes) || (this.timeToMin(familyTask.endTime) - this.timeToMin(familyTask.startTime));
+      if (familyDur !== expectedFamily) {
+        errors.push(`Длительность блока семьи (${familyDur} мин) не соответствует настройкам (${expectedFamily} мин)`);
+      }
+    }
+
+    const restTask = tasks.find(t => t.category === 'rest');
+    if (!restTask) {
+      errors.push('Отсутствует защищённый блок отдыха без ПК!');
+    } else {
+      const restDur = Number(restTask.durationMinutes) || (this.timeToMin(restTask.endTime) - this.timeToMin(restTask.startTime));
+      if (restDur !== expectedRest) {
+        errors.push(`Длительность отдыха без ПК (${restDur} мин) не соответствует настройкам (${expectedRest} мин)`);
+      }
+    }
+
+    const prayerTask = tasks.find(t => t.category === 'prayer');
+    if (!prayerTask) {
+      errors.push('Отсутствует защищённый блок намаза ясту!');
+    } else {
+      const prayerDur = Number(prayerTask.durationMinutes) || (this.timeToMin(prayerTask.endTime) - this.timeToMin(prayerTask.startTime));
+      if (prayerDur !== expectedPrayer) {
+        errors.push(`Длительность намаза ясту (${prayerDur} мин) не соответствует настройкам (${expectedPrayer} мин)`);
+      }
+    }
 
     return {
       valid: errors.length === 0,

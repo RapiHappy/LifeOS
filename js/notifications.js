@@ -8,9 +8,68 @@
 const NotificationsManager = {
   checkIntervalId: null,
   sentNotifications: new Set(), // Защита от дублей: 'taskId_reminderType_date'
+  HISTORY_KEY: 'lifeos_notification_history',
+  LAST_ACTIVE_KEY: 'lifeos_last_active_time',
 
   getTimeLib() {
     return (typeof TimeUtils !== 'undefined') ? TimeUtils : (typeof globalThis !== 'undefined' && globalThis.TimeUtils ? globalThis.TimeUtils : null);
+  },
+
+  /**
+   * Честное техническое описание архитектуры уведомлений LifeOS
+   */
+  getWebPushDisclosure() {
+    return {
+      webNotifications: 'Web Notifications API работает прямо в браузере и отображает системные всплывающие окна Windows, пока открыта вкладка LifeOS или браузер работает в фоне/свернут.',
+      webPush: 'Web Push API для доставки уведомлений при ПОЛНОСТЬЮ закрытом браузере требует серверной инфраструктуры (сервер очередей, VAPID-ключи, браузерный Push Service). На статическом хостинге GitHub Pages без отдельного бэкенда Web Push технически невозможен. LifeOS честно использует надёжные локальные уведомления и сохраняет полную историю событий при возвращении во вкладку.'
+    };
+  },
+
+  /**
+   * Получить историю уведомлений из LocalStorage (до 50 записей)
+   */
+  getNotificationHistory() {
+    if (typeof localStorage === 'undefined') return [];
+    try {
+      const data = localStorage.getItem(this.HISTORY_KEY);
+      return data ? JSON.parse(data) : [];
+    } catch (e) {
+      console.warn('Ошибка чтения истории уведомлений:', e);
+      return [];
+    }
+  },
+
+  /**
+   * Добавить запись в историю уведомлений
+   */
+  addNotificationToHistory(entry) {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      const history = this.getNotificationHistory();
+      const newEntry = {
+        id: `notif_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+        timestamp: new Date().toISOString(),
+        title: entry.title || 'Уведомление',
+        body: entry.body || '',
+        category: entry.category || 'general',
+        status: entry.status || 'delivered' // 'delivered' | 'in_app' | 'missed'
+      };
+      history.unshift(newEntry);
+      if (history.length > 50) {
+        history.length = 50;
+      }
+      localStorage.setItem(this.HISTORY_KEY, JSON.stringify(history));
+    } catch (e) {
+      console.warn('Ошибка сохранения истории уведомлений:', e);
+    }
+  },
+
+  /**
+   * Очистить историю уведомлений
+   */
+  clearNotificationHistory() {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.removeItem(this.HISTORY_KEY);
   },
 
   /**
@@ -19,8 +78,149 @@ const NotificationsManager = {
   init(db) {
     this.db = db;
     if (this.checkIntervalId) clearInterval(this.checkIntervalId);
-    this.checkIntervalId = setInterval(() => this.checkScheduleAndNotify(), 20000);
+    this.checkIntervalId = setInterval(() => {
+      this.checkScheduleAndNotify();
+      this.updateLastActive();
+    }, 20000);
+
+    // Проверка пропущенных событий при возвращении
+    this.checkMissedNotifications();
     this.checkScheduleAndNotify();
+    this.updateLastActive();
+  },
+
+  /**
+   * Обновить отметку активности пользователя
+   */
+  updateLastActive() {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(this.LAST_ACTIVE_KEY, Date.now().toString());
+  },
+
+  /**
+   * Проверить события, наступившие пока вкладка была закрыта или неактивна
+   */
+  async checkMissedNotifications() {
+    if (typeof localStorage === 'undefined' || !this.db) return;
+    const lastActiveStr = localStorage.getItem(this.LAST_ACTIVE_KEY);
+    if (!lastActiveStr) return;
+
+    const lastActive = parseInt(lastActiveStr, 10);
+    const now = Date.now();
+    const diffMin = Math.floor((now - lastActive) / 60000);
+
+    // Если прошло более 15 минут с последней активности
+    if (diffMin >= 15) {
+      const timeLib = this.getTimeLib();
+      const dateStr = timeLib ? timeLib.getTodayStr() : new Date().toISOString().split('T')[0];
+      const schedule = await this.db.getDaySchedule(dateStr);
+
+      if (schedule && schedule.tasks) {
+        const currentMin = timeLib ? timeLib.getCurrentMinutesMoscow() : (new Date().getHours() * 60 + new Date().getMinutes());
+        const lastActiveDate = new Date(lastActive);
+        const lastMin = lastActiveDate.getHours() * 60 + lastActiveDate.getMinutes();
+
+        const timeToMin = (t) => {
+          if (timeLib) return timeLib.timeToMin(t);
+          const [h, m] = (t || '00:00').split(':').map(Number);
+          return h * 60 + m;
+        };
+
+        const missed = schedule.tasks.filter(t => {
+          const tStart = timeToMin(t.startTime);
+          return tStart >= lastMin && tStart <= currentMin && t.status !== 'completed';
+        });
+
+        if (missed.length > 0) {
+          missed.forEach(t => {
+            this.addNotificationToHistory({
+              title: `Пропущено: ${t.title}`,
+              body: `Событие началось в ${t.startTime}, пока вкладка была неактивна`,
+              category: t.category,
+              status: 'missed'
+            });
+          });
+
+          this.showInAppToast(
+            '⚠️ Пропущенные события',
+            `Пока вкладка была неактивна, наступило ${missed.length} соб.: ${missed.map(m => m.title).join(', ')}`,
+            'warning'
+          );
+        }
+      }
+    }
+  },
+
+  /**
+   * Отображение внутристраничного всплывающего уведомления (in-app toast)
+   */
+  showInAppToast(title, body = '', type = 'info') {
+    if (typeof document === 'undefined') return;
+
+    let container = document.getElementById('lifeos-toast-container');
+    if (!container) {
+      container = document.createElement('div');
+      container.id = 'lifeos-toast-container';
+      container.style.cssText = `
+        position: fixed;
+        bottom: 24px;
+        right: 24px;
+        z-index: 10000;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        max-width: 380px;
+        pointer-events: none;
+      `;
+      document.body.appendChild(container);
+    }
+
+    const toast = document.createElement('div');
+    toast.className = `lifeos-toast toast-${type}`;
+    const borderColors = {
+      info: 'var(--color-primary, #2563eb)',
+      warning: '#f59e0b',
+      error: '#ef4444',
+      success: '#10b981'
+    };
+    const borderColor = borderColors[type] || borderColors.info;
+
+    toast.style.cssText = `
+      background: #ffffff;
+      color: #1e293b;
+      border-left: 4px solid ${borderColor};
+      padding: 12px 16px;
+      border-radius: 8px;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.15), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+      pointer-events: auto;
+      transition: all 0.3s ease;
+      opacity: 0;
+      transform: translateY(15px);
+      font-size: 14px;
+    `;
+
+    toast.innerHTML = `
+      <div style="font-weight: 600; margin-bottom: 4px; display: flex; justify-content: space-between; align-items: center;">
+        <span>${title}</span>
+        <button style="border: none; background: none; cursor: pointer; color: #94a3b8; font-size: 16px; padding: 0 4px;" onclick="this.parentElement.parentElement.remove()">×</button>
+      </div>
+      ${body ? `<div style="color: #64748b; font-size: 13px; line-height: 1.4;">${body}</div>` : ''}
+    `;
+
+    container.appendChild(toast);
+
+    requestAnimationFrame(() => {
+      toast.style.opacity = '1';
+      toast.style.transform = 'translateY(0)';
+    });
+
+    setTimeout(() => {
+      if (toast.parentElement) {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(10px)';
+        setTimeout(() => toast.remove(), 300);
+      }
+    }, 5000);
   },
 
   /**
@@ -85,17 +285,26 @@ const NotificationsManager = {
   },
 
   /**
-   * Отправка реального системного уведомления Windows
+   * Отправка системного уведомления Windows или fallback на in-app toast
    */
   showNotification(title, options = {}) {
-    if (this.getPermissionStatus() !== 'granted') {
-      console.log('Уведомление пропущено: разрешение не предоставлено.');
-      return null;
-    }
-
+    const perm = this.getPermissionStatus();
     const settings = this.db ? this.db.getSettings() : {};
+
     if (settings.notificationSound !== false) {
       this.playChime();
+    }
+
+    if (perm !== 'granted') {
+      // Fallback на внутристраничный тост
+      this.showInAppToast(title, options.body || '', options.type || 'info');
+      this.addNotificationToHistory({
+        title,
+        body: options.body || '',
+        category: options.category || 'general',
+        status: 'in_app'
+      });
+      return { inApp: true };
     }
 
     const defaultOptions = {
@@ -117,6 +326,13 @@ const NotificationsManager = {
         notif.close();
       };
 
+      this.addNotificationToHistory({
+        title,
+        body: options.body || '',
+        category: options.category || 'general',
+        status: 'delivered'
+      });
+
       return notif;
     } catch (e) {
       console.warn('Notification constructor error (возможно ServiceWorker context):', e);
@@ -125,6 +341,13 @@ const NotificationsManager = {
           reg.showNotification(title, finalOptions);
         });
       }
+      this.showInAppToast(title, options.body || '', options.type || 'info');
+      this.addNotificationToHistory({
+        title,
+        body: options.body || '',
+        category: options.category || 'general',
+        status: 'in_app'
+      });
       return null;
     }
   },
@@ -157,7 +380,6 @@ const NotificationsManager = {
    */
   async checkScheduleAndNotify() {
     if (!this.db) return;
-    if (this.getPermissionStatus() !== 'granted') return;
 
     const timeLib = this.getTimeLib();
     const settings = this.db.getSettings();

@@ -6,14 +6,53 @@
  */
 
 const AIPlanner = {
+  // Защита от циклов и троттлинг
+  _lastCallTimestamps: [],
+  _lastInputHashes: {},
+  _debounceTimer: null,
+  _isReplanning: false,
+
+  /**
+   * Сброс истории троттлинга (для тестов)
+   */
+  resetThrottle() {
+    this._lastCallTimestamps = [];
+    this._lastInputHashes = {};
+    if (this._debounceTimer) {
+      clearTimeout(this._debounceTimer);
+      this._debounceTimer = null;
+    }
+    this._isReplanning = false;
+  },
+
+  /**
+   * Вызов автоперепланирования с debounce (задержка перед выполнением)
+   */
+  debouncedAutoReplan(dateStr, db, triggerReason = 'Быстрое обновление данных', delay = 1000) {
+    return new Promise((resolve, reject) => {
+      if (this._debounceTimer) {
+        clearTimeout(this._debounceTimer);
+      }
+      this._debounceTimer = setTimeout(async () => {
+        try {
+          const res = await this.autoReplan(dateStr, db, triggerReason);
+          resolve(res);
+        } catch (err) {
+          reject(err);
+        }
+      }, delay);
+    });
+  },
+
   /**
    * Выполнить полный цикл автоматического перепланирования
    * @param {string} dateStr 'YYYY-MM-DD'
    * @param {Object} db - экземпляр Database
    * @param {string} [triggerReason] - причина перепланирования
-   * @returns {Promise<Object>} { success, schedule, explanation, source, appliedAt }
+   * @param {boolean} [force=false] - принудительный перерасчёт без пропуска по хэшу
+   * @returns {Promise<Object>} { success, schedule, explanation, source, appliedAt, skipped, throttled }
    */
-  async autoReplan(dateStr, db, triggerReason = 'Обновление данных расписания') {
+  async autoReplan(dateStr, db, triggerReason = 'Обновление данных расписания', force = false) {
     const timeLib = (typeof TimeUtils !== 'undefined') ? TimeUtils : (typeof globalThis !== 'undefined' && globalThis.TimeUtils ? globalThis.TimeUtils : null);
     if (!dateStr && timeLib) {
       dateStr = timeLib.getTodayStr();
@@ -21,18 +60,60 @@ const AIPlanner = {
       dateStr = new Date().toISOString().split('T')[0];
     }
 
+    // 1. Троттлинг: не более 5 вызовов за последние 10 секунд
+    const now = Date.now();
+    this._lastCallTimestamps = this._lastCallTimestamps.filter(t => (now - t) < 10000);
+    if (this._lastCallTimestamps.length >= 5) {
+      console.warn('AIPlanner: превышен лимит вызовов перепланирования (>5 за 10 сек). Запрос отклонён для защиты от зацикливания.');
+      const fallbackSchedule = await db.getDaySchedule(dateStr);
+      return {
+        success: false,
+        throttled: true,
+        reason: 'Превышен лимит вызовов перепланирования (троттлинг)',
+        schedule: fallbackSchedule
+      };
+    }
+    this._lastCallTimestamps.push(now);
+
     const settings = db.getSettings();
     const homework = await db.getAllHomework();
     const timetable = await db.getSchoolTimetable();
     const projects = await db.getProjects();
     const olympiads = await db.getOlympiads();
 
+    // 2. Проверка изменения входных данных (Input Hash Check)
+    const dayOfWeek = timeLib ? timeLib.getDayOfWeek(dateStr) : 1;
+    const inputState = JSON.stringify({
+      dateStr,
+      hw: homework.map(h => ({ id: h.id, status: h.status, dueDate: h.dueDate, minutes: h.estimatedMinutes })),
+      tt: (timetable.find(t => t.dayOfWeek === dayOfWeek) || {}).lessons || [],
+      proj: projects.map(p => ({ id: p.id, deadline: p.deadline, priority: p.priority })),
+      oly: olympiads.filter(o => o.isConfirmed && !o.isTemplate).map(o => ({ id: o.id, date: o.date })),
+      mode: settings.activeMode,
+      wake: settings.wakeTime,
+      sleep: settings.sleepStart,
+      prayer: settings.prayerManualTime || settings.prayerCity
+    });
+
+    if (!force && this._lastInputHashes[dateStr] === inputState) {
+      const existing = await db.getDaySchedule(dateStr);
+      if (existing) {
+        return {
+          success: true,
+          schedule: existing,
+          skipped: true,
+          source: 'cache',
+          explanation: 'Входные данные не изменились. Текущее расписание сохранено.'
+        };
+      }
+    }
+
     let externalSuccess = false;
     let newPlan = null;
     let aiExplanation = '';
     let plannerSource = 'local';
 
-    // 1. Попытка обратиться к внешнему защищённому эндпоинту (если указан в настройках)
+    // 3. Попытка обратиться к внешнему защищённому эндпоинту (если указан в настройках)
     if (settings.aiEndpoint && typeof settings.aiEndpoint === 'string' && settings.aiEndpoint.trim().startsWith('http')) {
       try {
         const extResult = await this.queryExternalAI(dateStr, {
@@ -40,7 +121,7 @@ const AIPlanner = {
         });
         if (extResult && extResult.tasks && Array.isArray(extResult.tasks)) {
           const validated = this.sanitizeAndValidateAIPlan(extResult.tasks, dateStr, settings);
-          const integrity = Scheduler.verifyScheduleIntegrity(validated);
+          const integrity = Scheduler.verifyScheduleIntegrity(validated, settings);
           if (integrity.valid) {
             newPlan = validated;
             aiExplanation = extResult.explanation || 'Расписание оптимизировано внешней ИИ-моделью через безопасный эндпоинт.';
@@ -55,15 +136,43 @@ const AIPlanner = {
       }
     }
 
-    // 2. Локальный детерминированный планировщик LifeOS
+    // 4. Локальный детерминированный планировщик LifeOS
     if (!externalSuccess) {
       newPlan = await Scheduler.generateDailySchedule(dateStr, db);
       aiExplanation = this.generateLocalExplanation(dateStr, newPlan, homework, projects, timetable, settings);
       plannerSource = 'local';
     }
 
-    // 3. Автоматическое применение плана с резервной копией
+    // 5. Защита от потери выполненных задач текущего дня
+    const previous = await db.getDaySchedule(dateStr);
+    if (previous && previous.tasks && Array.isArray(previous.tasks)) {
+      const completedTasks = previous.tasks.filter(t => t.status === 'completed');
+      for (const comp of completedTasks) {
+        const match = newPlan.tasks.find(t =>
+          (comp.id && t.id === comp.id) ||
+          (comp.hwId && t.hwId === comp.hwId) ||
+          (t.title === comp.title && t.startTime === comp.startTime)
+        );
+        if (match) {
+          match.status = 'completed';
+          if (comp.completedAt) match.completedAt = comp.completedAt;
+        } else {
+          // Если выполненной задачи нет в новом плане (например, была выполнена и удалена из списка невыполненных ДЗ), сохраняем её
+          newPlan.tasks.push(comp);
+        }
+      }
+      // Пересортируем задачи по времени начала
+      const timeToMin = (t) => {
+        if (timeLib) return timeLib.timeToMin(t);
+        const [h, m] = (t || '00:00').split(':').map(Number);
+        return (h || 0) * 60 + (m || 0);
+      };
+      newPlan.tasks.sort((a, b) => timeToMin(a.startTime) - timeToMin(b.startTime));
+    }
+
+    // 6. Автоматическое применение плана с резервной копией
     await Scheduler.applyScheduleWithBackup(dateStr, newPlan, db, triggerReason);
+    this._lastInputHashes[dateStr] = inputState;
 
     return {
       success: true,

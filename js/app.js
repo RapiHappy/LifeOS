@@ -15,7 +15,7 @@ const App = {
   },
 
   async init() {
-    console.log('Инициализация LifeOS v1.1...');
+    console.log('Инициализация LifeOS v1.1.1...');
     const timeLib = this.getTimeLib();
 
     // Текущая дата в Московском часовом поясе
@@ -181,6 +181,22 @@ const App = {
 
     let html = '';
 
+    // Предупреждение о неподтверждённом шаблоне школьного расписания
+    if (settings.schoolTimetableConfirmed === false && !sessionStorage.getItem('dismiss_timetable_banner')) {
+      html += `
+        <div class="unconfirmed-timetable-banner" style="background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 12px 16px; margin-bottom: 1rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap;">
+          <div style="color: #92400e; font-size: 0.95rem;">
+            <strong>⚠️ Школьное расписание уроков ещё не подтверждено:</strong> загружен типовой шаблон 10 класса. Проверьте расписание во вкладке «Неделя» или подтвердите текущий шаблон.
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-sm btn-primary" onclick="App.navigateTo('school')">Проверить уроки</button>
+            <button class="btn btn-sm btn-secondary" onclick="App.confirmTimetableQuick()">✓ Подтвердить шаблон</button>
+            <button class="btn btn-sm btn-outline-secondary" onclick="sessionStorage.setItem('dismiss_timetable_banner', '1'); App.renderTodayView();">Скрыть</button>
+          </div>
+        </div>
+      `;
+    }
+
     // Предупреждение о старых демо-данных v1.0
     if (hasLegacyDemo && !sessionStorage.getItem('dismiss_legacy_banner')) {
       html += `
@@ -198,11 +214,12 @@ const App = {
 
     // Предупреждение о не уместившихся задачах
     if (schedule && schedule.unallocatedMinutes > 0) {
+      const taskNames = (schedule.unallocatedTasks || []).map(u => `${u.title} (${u.unallocatedMinutes} мин)`).join(', ');
       html += `
         <div class="overload-warning-banner" style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 12px 16px; margin-bottom: 1rem; display: flex; align-items: center; gap: 1rem;">
           <span style="font-size: 1.5rem;">ℹ️</span>
           <div style="color: #1e40af; font-size: 0.9rem;">
-            <strong>Уведомление оптимизатора:</strong> задач на сегодня больше, чем доступного времени до отбоя в 21:30. Не уместилось ${schedule.unallocatedMinutes} мин (${schedule.unallocatedTasks.length} зад.). Они не удалены, а безопасно перенесены. Время сна строго защищено.
+            <strong>Уведомление оптимизатора:</strong> задач на сегодня больше, чем доступного времени до отбоя в ${settings.sleepStart || '21:30'}. Не уместилось ${schedule.unallocatedMinutes} мин (${schedule.unallocatedTasks.length} зад.): <em>${taskNames}</em>. Они не удалены, а безопасно перенесены. Время сна и защищённые блоки строго соблюдены.
           </div>
         </div>
       `;
@@ -423,6 +440,17 @@ const App = {
     }
 
     await Database.saveDaySchedule(schedule);
+    this.renderTodayView();
+  },
+
+  async confirmTimetableQuick() {
+    Database.saveSettings({
+      schoolTimetableConfirmed: true,
+      schoolTimetableOrigin: 'user_confirmed'
+    });
+    sessionStorage.removeItem('dismiss_timetable_banner');
+    await AIPlanner.autoReplan(this.selectedDate, Database, 'Быстрое подтверждение расписания уроков', true);
+    alert('Расписание уроков подтверждено!');
     this.renderTodayView();
   },
 

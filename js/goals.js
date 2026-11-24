@@ -1,7 +1,9 @@
 /**
- * LifeOS — Модуль «Цели» (goals.js)
- * Подготовка к ЕГЭ (Профильная математика обе части, Информатика, Русский язык),
- * Олимпиады и Проекты (включая «Миросборка» и Хакатон 27 ноября 2026).
+ * LifeOS — Модуль «Цели» (goals.js v1.1.1)
+ * Подготовка к ЕГЭ (Профильная математика 1-19, Информатика 1-27, Русский язык 1-27 ФИПИ 2026/2027).
+ * Раздельный учёт изучения теории, решения задач и работы над ошибками.
+ * Олимпиадное движение: полное CRUD, защита от неподтверждённых событий.
+ * Проекты и Хакатоны (включая «Миросборка» 27 ноября).
  * Интеграция с TimeUtils (Europe/Moscow).
  */
 
@@ -42,7 +44,7 @@ const GoalsManager = {
       <div class="goals-nav-bar">
         <div class="filter-pills">
           <button class="pill-btn ${this.currentTab === 'ege' ? 'active' : ''}" onclick="GoalsManager.setTab('ege')">
-            📚 Подготовка к ЕГЭ
+            📚 Подготовка к ЕГЭ (ФИПИ 2026/2027)
           </button>
           <button class="pill-btn ${this.currentTab === 'olympiads' ? 'active' : ''}" onclick="GoalsManager.setTab('olympiads')">
             🏆 Олимпиады
@@ -69,43 +71,73 @@ const GoalsManager = {
   // РАЗДЕЛ ЕГЭ
   // ==========================================
   async renderEgeSection() {
-    const topics = await this.db.getEgeTopics(this.currentEgeSubject);
+    const allTopics = await this.db.getEgeTopics();
+    const topics = allTopics.filter(t => t.subject === this.currentEgeSubject);
 
-    // Подсчет метрик по предмету
+    // Подсчет метрик по каждому из трёх предметов отдельно
+    const mathTopics = allTopics.filter(t => t.subject === 'math');
+    const infTopics = allTopics.filter(t => t.subject === 'informatics');
+    const rusTopics = allTopics.filter(t => t.subject === 'russian');
+
+    const getSubjectStats = (list) => {
+      const total = list.length;
+      const mastered = list.filter(t => t.status === 'mastered').length;
+      const theory = list.filter(t => !!t.theoryStudied).length;
+      const pct = total > 0 ? Math.round((mastered / total) * 100) : 0;
+      return { total, mastered, theory, pct };
+    };
+
+    const mathStats = getSubjectStats(mathTopics);
+    const infStats = getSubjectStats(infTopics);
+    const rusStats = getSubjectStats(rusTopics);
+
+    // Текущий предмет
     const totalTopics = topics.length;
     const masteredCount = topics.filter(t => t.status === 'mastered').length;
     const inProgressCount = topics.filter(t => t.status === 'in_progress').length;
+    const theoryStudiedCount = topics.filter(t => !!t.theoryStudied).length;
     const progressPercent = totalTopics > 0 ? Math.round((masteredCount / totalTopics) * 100) : 0;
 
     let totalSolved = 0;
     let totalCorrect = 0;
     topics.forEach(t => {
-      totalSolved += (t.solvedCount || 0);
-      totalCorrect += (t.correctCount || 0);
+      totalSolved += (Number(t.solvedCount) || 0);
+      totalCorrect += (Number(t.correctCount) || 0);
     });
     const accuracy = totalSolved > 0 ? Math.round((totalCorrect / totalSolved) * 100) : 0;
 
     const subjectNames = {
-      math: 'Профильная математика (Части 1 и 2)',
-      informatics: 'Информатика (КЕГЭ)',
-      russian: 'Русский язык'
+      math: 'Профильная математика (Задания №1–19)',
+      informatics: 'Информатика КЕГЭ (Задания №1–27)',
+      russian: 'Русский язык (Задания №1–27)'
     };
 
     let html = `
-      <!-- Переключатель предметов ЕГЭ -->
-      <div class="ege-subject-bar">
-        <button class="subject-tab-btn ${this.currentEgeSubject === 'math' ? 'active' : ''}" onclick="GoalsManager.setEgeSubject('math')">
-          📐 Профильная математика
-        </button>
-        <button class="subject-tab-btn ${this.currentEgeSubject === 'informatics' ? 'active' : ''}" onclick="GoalsManager.setEgeSubject('informatics')">
-          💻 Информатика
-        </button>
-        <button class="subject-tab-btn ${this.currentEgeSubject === 'russian' ? 'active' : ''}" onclick="GoalsManager.setEgeSubject('russian')">
-          📖 Русский язык
-        </button>
+      <!-- Карточки общего прогресса по 3 предметам -->
+      <div class="metrics-grid" style="margin-bottom: 1rem;">
+        <div class="metric-card ${this.currentEgeSubject === 'math' ? 'metric-card-accent' : ''}" style="cursor: pointer;" onclick="GoalsManager.setEgeSubject('math')">
+          <div style="font-weight: 600; margin-bottom: 4px;">📐 Профильная математика</div>
+          <div class="metric-value" style="font-size: 1.5rem;">${mathStats.pct}%</div>
+          <div class="metric-label">${mathStats.mastered}/${mathStats.total} тем • Теория: ${mathStats.theory}</div>
+          <div class="progress-bar-bg" style="margin-top: 6px;"><div class="progress-bar-fill" style="width: ${mathStats.pct}%;"></div></div>
+        </div>
+
+        <div class="metric-card ${this.currentEgeSubject === 'informatics' ? 'metric-card-accent' : ''}" style="cursor: pointer;" onclick="GoalsManager.setEgeSubject('informatics')">
+          <div style="font-weight: 600; margin-bottom: 4px;">💻 Информатика (КЕГЭ)</div>
+          <div class="metric-value" style="font-size: 1.5rem;">${infStats.pct}%</div>
+          <div class="metric-label">${infStats.mastered}/${infStats.total} тем • Теория: ${infStats.theory}</div>
+          <div class="progress-bar-bg" style="margin-top: 6px;"><div class="progress-bar-fill" style="width: ${infStats.pct}%;"></div></div>
+        </div>
+
+        <div class="metric-card ${this.currentEgeSubject === 'russian' ? 'metric-card-accent' : ''}" style="cursor: pointer;" onclick="GoalsManager.setEgeSubject('russian')">
+          <div style="font-weight: 600; margin-bottom: 4px;">📖 Русский язык</div>
+          <div class="metric-value" style="font-size: 1.5rem;">${rusStats.pct}%</div>
+          <div class="metric-label">${rusStats.mastered}/${rusStats.total} тем • Теория: ${rusStats.theory}</div>
+          <div class="progress-bar-bg" style="margin-top: 6px;"><div class="progress-bar-fill" style="width: ${rusStats.pct}%;"></div></div>
+        </div>
       </div>
 
-      <!-- Статистика по предмету -->
+      <!-- Детальные метрики выбранного предмета -->
       <div class="metrics-grid">
         <div class="metric-card">
           <div class="metric-value">${progressPercent}%</div>
@@ -119,12 +151,12 @@ const GoalsManager = {
           <div class="metric-label">Тем освоено (${inProgressCount} в работе)</div>
         </div>
         <div class="metric-card">
-          <div class="metric-value">${totalSolved}</div>
-          <div class="metric-label">Решено задач всего</div>
+          <div class="metric-value">${theoryStudiedCount} / ${totalTopics}</div>
+          <div class="metric-label">Теория пройдена</div>
         </div>
         <div class="metric-card">
           <div class="metric-value ${accuracy >= 80 ? 'text-success' : ''}">${accuracy}%</div>
-          <div class="metric-label">Точность верных решений</div>
+          <div class="metric-label">Точность (${totalSolved} решено)</div>
         </div>
       </div>
 
@@ -132,19 +164,17 @@ const GoalsManager = {
         <div class="section-card-header">
           <div>
             <h3>${subjectNames[this.currentEgeSubject]}</h3>
-            <p class="text-muted">Отмечайте реальные результаты тренировочных вариантов и отработанные темы. Все показатели начинаются с нуля.</p>
+            <p class="text-muted">Официальный кодификатор ФИПИ (2026/2027). Отмечайте изучение теории, правильные ответы и фиксируйте ошибки для повторения.</p>
           </div>
+          <span class="badge badge-light-outline">ФИПИ 2026/2027</span>
         </div>
 
         <div class="ege-topics-list">
     `;
 
-    // Группировка для математики (Часть 1 и Часть 2)
-    const part1 = topics.filter(t => t.part === 1);
-    const part2 = topics.filter(t => t.part === 2);
-
     const renderTopicCard = (topic) => {
       const hasMistakes = topic.mistakes && topic.mistakes.length > 0;
+      const isTheoryDone = !!topic.theoryStudied;
 
       return `
         <div class="topic-card status-${topic.status}">
@@ -158,6 +188,14 @@ const GoalsManager = {
                 <option value="mastered" ${topic.status === 'mastered' ? 'selected' : ''}>Освоено</option>
               </select>
             </div>
+          </div>
+
+          <div style="margin: 0.5rem 0; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+            <label class="checkbox-label" style="font-size: 0.85rem; cursor: pointer;">
+              <input type="checkbox" ${isTheoryDone ? 'checked' : ''} onchange="GoalsManager.toggleTheory('${topic.id}')">
+              <span>📖 Теория изучена</span>
+            </label>
+            <span class="text-muted" style="font-size: 0.8rem;">${topic.fipiSource || 'ФИПИ 2026/2027'}</span>
           </div>
 
           <div class="topic-meta-row text-muted">
@@ -192,11 +230,23 @@ const GoalsManager = {
     };
 
     if (this.currentEgeSubject === 'math') {
+      const part1 = topics.filter(t => t.part === 1);
+      const part2 = topics.filter(t => t.part === 2);
       html += `
-        <h4 class="ege-part-title">Часть 1 (Задания 1–12, базовые задачи с кратким ответом)</h4>
+        <h4 class="ege-part-title">Часть 1 (Задания №1–12, базовые задачи с кратким ответом)</h4>
         <div class="topics-grid">${part1.map(renderTopicCard).join('')}</div>
 
-        <h4 class="ege-part-title" style="margin-top: 2rem;">Часть 2 (Задания 13–19, углубленные задачи с развернутым решением)</h4>
+        <h4 class="ege-part-title" style="margin-top: 2rem;">Часть 2 (Задания №13–19, углубленные задачи с развернутым решением)</h4>
+        <div class="topics-grid">${part2.map(renderTopicCard).join('')}</div>
+      `;
+    } else if (this.currentEgeSubject === 'russian') {
+      const part1 = topics.filter(t => t.part === 1 || t.code !== '№27');
+      const part2 = topics.filter(t => t.part === 2 || t.code === '№27');
+      html += `
+        <h4 class="ege-part-title">Часть 1 (Задания №1–26, тестовая часть: орфография, пунктуация, грамматика)</h4>
+        <div class="topics-grid">${part1.map(renderTopicCard).join('')}</div>
+
+        <h4 class="ege-part-title" style="margin-top: 2rem;">Часть 2 (Задание №27, развёрнутое сочинение-рассуждение)</h4>
         <div class="topics-grid">${part2.map(renderTopicCard).join('')}</div>
       `;
     } else {
@@ -211,6 +261,14 @@ const GoalsManager = {
     return html;
   },
 
+  async toggleTheory(id) {
+    const topic = await this.db.get('ege_topics', id);
+    if (!topic) return;
+    topic.theoryStudied = !topic.theoryStudied;
+    await this.db.updateEgeTopic(topic);
+    this.render();
+  },
+
   async updateTopicStatus(id, newStatus) {
     const topic = await this.db.get('ege_topics', id);
     if (!topic) return;
@@ -223,9 +281,9 @@ const GoalsManager = {
     const topic = await this.db.get('ege_topics', id);
     if (!topic) return;
 
-    topic.solvedCount = (topic.solvedCount || 0) + 1;
+    topic.solvedCount = (Number(topic.solvedCount) || 0) + 1;
     if (isCorrect) {
-      topic.correctCount = (topic.correctCount || 0) + 1;
+      topic.correctCount = (Number(topic.correctCount) || 0) + 1;
     }
 
     await this.db.updateEgeTopic(topic);
@@ -259,7 +317,7 @@ const GoalsManager = {
       modal.innerHTML = `
         <div class="modal-card">
           <div class="modal-header">
-            <h3>Зафиксировать ошибку в теме ${topic.code}</h3>
+            <h3>Зафиксировать ошибку в задании ${topic.code}</h3>
             <button class="modal-close-btn" onclick="document.getElementById('${modalId}').remove()">&times;</button>
           </div>
           <div class="modal-body">
@@ -307,7 +365,10 @@ const GoalsManager = {
   // РАЗДЕЛ ОЛИМПИАДЫ
   // ==========================================
   async renderOlympiadsSection() {
-    const olympiads = await this.db.getOlympiads();
+    const allOlys = await this.db.getOlympiads();
+    const userOlys = allOlys.filter(o => !o.isTemplate && o.isConfirmed !== false);
+    const templates = this.db.getOlympiadTemplates ? this.db.getOlympiadTemplates() : [];
+
     const todayStr = this.getTodayString();
     const timeLib = this.getTimeLib();
 
@@ -316,7 +377,7 @@ const GoalsManager = {
         <div class="section-card-header">
           <div>
             <h3>Олимпиадное движение</h3>
-            <p class="text-muted">Подготовка к ВсОШ и перечневым олимпиадам. Планировщик резервирует 2 блока подготовки в неделю.</p>
+            <p class="text-muted">Подготовка к ВсОШ и перечневым олимпиадам. Никаких вымышленных дат — добавляйте реальные подтверждённые события.</p>
           </div>
           <button class="btn btn-primary btn-sm" onclick="GoalsManager.openAddOlympiadModal()">+ Добавить олимпиаду</button>
         </div>
@@ -324,35 +385,42 @@ const GoalsManager = {
         <div class="olympiads-grid">
     `;
 
-    if (olympiads.length === 0) {
+    if (userOlys.length === 0) {
       html += `
-        <div class="empty-state">
-          <p>Пока нет добавленных олимпиад.</p>
+        <div class="empty-state" style="grid-column: 1 / -1;">
+          <p>В вашем календаре пока нет подтверждённых олимпиад.</p>
+          <button class="btn btn-primary btn-sm" onclick="GoalsManager.openAddOlympiadModal()">+ Добавить моё первое событие</button>
         </div>
       `;
     } else {
-      olympiads.forEach(oly => {
+      userOlys.forEach(oly => {
         let diffDays = null;
         if (oly.date) {
           diffDays = timeLib ? timeLib.diffDays(todayStr, oly.date) : Math.ceil((new Date(oly.date) - new Date()) / (1000 * 60 * 60 * 24));
         }
 
-        const solved = oly.solvedCount || 0;
-        const target = oly.prepTasksCount || 30;
+        const solved = Number(oly.solvedCount) || 0;
+        const target = Number(oly.prepTasksCount) || 30;
         const percent = target > 0 ? Math.min(100, Math.round((solved / target) * 100)) : 0;
 
         html += `
           <div class="goal-item-card">
             <div class="goal-item-header">
               <span class="badge badge-purple">${oly.subject || 'Предмет'}</span>
-              ${diffDays !== null ? `<span class="badge ${diffDays <= 7 ? 'badge-danger' : 'badge-info'}">Дней осталось: ${diffDays >= 0 ? diffDays : 'прошла'}</span>` : ''}
+              ${diffDays !== null ? `<span class="badge ${diffDays <= 7 && diffDays >= 0 ? 'badge-danger' : 'badge-info'}">${diffDays >= 0 ? `Дней осталось: ${diffDays}` : 'Прошла'}</span>` : ''}
             </div>
             <h4>${oly.title}</h4>
             <div class="goal-meta text-muted">
               <span>Этап: <strong>${oly.stage || 'Муниципальный'}</strong></span>
-              <span>Дата: <strong>${oly.date || 'Не указана'}</strong></span>
+              <span>Дата: <strong>${oly.date || 'Не указана'} ${oly.time ? `(${oly.time})` : ''}</strong></span>
+              ${oly.location ? `<span>📍 Формат: ${oly.location}</span>` : ''}
               <span>Цель: <strong>${oly.targetPrize || 'Призёр'}</strong></span>
             </div>
+            ${oly.sourceUrl ? `
+              <div style="margin: 0.25rem 0;">
+                <a href="${oly.sourceUrl}" target="_blank" rel="noopener" style="font-size: 0.85rem; color: #4f46e5; text-decoration: underline;">Официальный регламент ↗</a>
+              </div>
+            ` : ''}
             ${oly.notes ? `<p class="goal-notes text-muted">${oly.notes}</p>` : ''}
 
             <div class="progress-box">
@@ -367,7 +435,8 @@ const GoalsManager = {
 
             <div class="goal-card-actions">
               <button class="btn btn-sm btn-outline-primary" onclick="GoalsManager.incrementOlySolved('${oly.id}')">+1 Задача решена</button>
-              <button class="btn btn-sm btn-icon" title="Удалить" onclick="GoalsManager.deleteOlympiad('${oly.id}')">🗑️</button>
+              <button class="btn btn-sm btn-icon" title="Редактировать" onclick="GoalsManager.openEditOlympiadModal('${oly.id}')">✏️</button>
+              <button class="btn btn-sm btn-icon text-danger" title="Удалить" onclick="GoalsManager.deleteOlympiad('${oly.id}')">🗑️</button>
             </div>
           </div>
         `;
@@ -375,6 +444,33 @@ const GoalsManager = {
     }
 
     html += `
+        </div>
+      </div>
+
+      <!-- Блок рекомендуемых шаблонов олимпиад -->
+      <div class="section-card" style="margin-top: 1.5rem; background: #f8fafc;">
+        <div class="section-card-header">
+          <div>
+            <h4>💡 Популярные олимпиады для 10 класса (шаблоны)</h4>
+            <p class="text-muted" style="font-size: 0.85rem;">Ориентировочные даты ВсОШ. Выберите олимпиаду и подтвердите реальную дату проведения в вашей школе перед добавлением в активный план.</p>
+          </div>
+        </div>
+        <div class="olympiads-grid">
+          ${templates.map(tpl => `
+            <div class="goal-item-card" style="background: white; border-style: dashed;">
+              <div class="goal-item-header">
+                <span class="badge badge-purple">${tpl.subject}</span>
+                <span class="badge badge-warning">⚡ Требует подтверждения</span>
+              </div>
+              <h4>${tpl.title}</h4>
+              <p class="text-muted" style="font-size: 0.85rem;">${tpl.notes}</p>
+              <div style="margin-top: 0.5rem;">
+                <button class="btn btn-sm btn-outline-primary" onclick="GoalsManager.openAddFromTemplateModal('${tpl.id}')">
+                  + Добавить и подтвердить дату
+                </button>
+              </div>
+            </div>
+          `).join('')}
         </div>
       </div>
     `;
@@ -385,7 +481,7 @@ const GoalsManager = {
   async incrementOlySolved(id) {
     const oly = await this.db.get('olympiads', id);
     if (!oly) return;
-    oly.solvedCount = (oly.solvedCount || 0) + 1;
+    oly.solvedCount = (Number(oly.solvedCount) || 0) + 1;
     await this.db.saveOlympiad(oly);
 
     const todayStr = this.getTodayString();
@@ -406,6 +502,34 @@ const GoalsManager = {
   },
 
   openAddOlympiadModal() {
+    this.showOlympiadModal(null);
+  },
+
+  openAddFromTemplateModal(templateId) {
+    const templates = this.db.getOlympiadTemplates ? this.db.getOlympiadTemplates() : [];
+    const tpl = templates.find(t => t.id === templateId);
+    if (!tpl) return;
+    this.showOlympiadModal({
+      title: tpl.title,
+      subject: tpl.subject,
+      stage: tpl.stage,
+      date: tpl.date,
+      time: tpl.time || '10:00',
+      location: tpl.location || 'Базовая школа',
+      sourceUrl: tpl.sourceUrl || '',
+      prepTasksCount: tpl.prepTasksCount || 30,
+      targetPrize: tpl.targetPrize || 'Призёр'
+    });
+  },
+
+  async openEditOlympiadModal(id) {
+    const oly = await this.db.get('olympiads', id);
+    if (!oly) return;
+    this.showOlympiadModal(oly, id);
+  },
+
+  showOlympiadModal(olyData, editId = null) {
+    const isEdit = editId !== null;
     const modalId = 'oly-modal';
     let modal = document.getElementById(modalId);
     if (!modal) {
@@ -421,61 +545,95 @@ const GoalsManager = {
     modal.innerHTML = `
       <div class="modal-card">
         <div class="modal-header">
-          <h3>Добавить олимпиаду</h3>
+          <h3>${isEdit ? 'Редактировать олимпиаду' : 'Добавить подтверждённую олимпиаду'}</h3>
           <button class="modal-close-btn" onclick="document.getElementById('${modalId}').remove()">&times;</button>
         </div>
-        <form onsubmit="GoalsManager.handleOlySubmit(event)">
+        <form onsubmit="GoalsManager.handleOlySubmit(event, '${editId || ''}')">
           <div class="form-group">
             <label>Название олимпиады *</label>
-            <input type="text" id="oly-title" class="form-control" required placeholder="ВсОШ по математике">
+            <input type="text" id="oly-title" class="form-control" required value="${olyData ? olyData.title : ''}" placeholder="ВсОШ по математике (Муниципальный этап)">
           </div>
+
           <div class="form-row">
             <div class="form-group col">
               <label>Предмет *</label>
-              <input type="text" id="oly-subject" class="form-control" required value="Математика">
+              <input type="text" id="oly-subject" class="form-control" required value="${olyData ? olyData.subject : 'Математика'}">
             </div>
             <div class="form-group col">
               <label>Этап</label>
-              <input type="text" id="oly-stage" class="form-control" value="Муниципальный этап">
+              <input type="text" id="oly-stage" class="form-control" value="${olyData ? olyData.stage : 'Муниципальный этап'}">
             </div>
           </div>
+
           <div class="form-row">
             <div class="form-group col">
               <label>Дата проведения *</label>
-              <input type="date" id="oly-date" class="form-control" required value="${defaultOlyDate}">
+              <input type="date" id="oly-date" class="form-control" required value="${olyData ? olyData.date : defaultOlyDate}">
+            </div>
+            <div class="form-group col">
+              <label>Время начала</label>
+              <input type="time" id="oly-time" class="form-control" value="${olyData ? (olyData.time || '10:00') : '10:00'}">
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group col">
+              <label>Место / Формат проведения</label>
+              <input type="text" id="oly-location" class="form-control" value="${olyData ? (olyData.location || '') : ''}" placeholder="Очно в школе №2 или Онлайн">
+            </div>
+            <div class="form-group col">
+              <label>Ссылка на источник / регламент</label>
+              <input type="url" id="oly-url" class="form-control" value="${olyData ? (olyData.sourceUrl || '') : ''}" placeholder="https://vos.olimpiada.ru/">
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group col">
+              <label>Целевой результат</label>
+              <input type="text" id="oly-prize" class="form-control" value="${olyData ? (olyData.targetPrize || 'Призёр') : 'Призёр'}">
             </div>
             <div class="form-group col">
               <label>План задач для подготовки</label>
-              <input type="number" id="oly-tasks-plan" class="form-control" value="30">
+              <input type="number" id="oly-tasks-plan" class="form-control" value="${olyData ? (olyData.prepTasksCount || 30) : 30}">
             </div>
           </div>
-          <div class="form-group">
-            <label>Целевой результат</label>
-            <input type="text" id="oly-prize" class="form-control" value="Призёр">
-          </div>
+
           <div class="modal-footer">
             <button type="button" class="btn btn-secondary" onclick="document.getElementById('${modalId}').remove()">Отмена</button>
-            <button type="submit" class="btn btn-primary">Добавить</button>
+            <button type="submit" class="btn btn-primary">${isEdit ? 'Сохранить изменения' : 'Подтвердить и добавить'}</button>
           </div>
         </form>
       </div>
     `;
   },
 
-  async handleOlySubmit(e) {
+  async handleOlySubmit(e, editId) {
     e.preventDefault();
-    const newOly = {
+
+    const olyData = {
       title: document.getElementById('oly-title').value.trim(),
       subject: document.getElementById('oly-subject').value.trim(),
       stage: document.getElementById('oly-stage').value.trim(),
       date: document.getElementById('oly-date').value,
-      prepTasksCount: Number(document.getElementById('oly-tasks-plan').value) || 30,
-      solvedCount: 0,
+      time: document.getElementById('oly-time').value,
+      location: document.getElementById('oly-location').value.trim(),
+      sourceUrl: document.getElementById('oly-url').value.trim(),
       targetPrize: document.getElementById('oly-prize').value.trim(),
-      status: 'active'
+      prepTasksCount: Number(document.getElementById('oly-tasks-plan').value) || 30,
+      status: 'active',
+      isConfirmed: true,
+      isTemplate: false
     };
 
-    await this.db.saveOlympiad(newOly);
+    if (editId) {
+      const existing = await this.db.get('olympiads', editId);
+      const merged = { ...existing, ...olyData };
+      await this.db.saveOlympiad(merged);
+    } else {
+      olyData.solvedCount = 0;
+      await this.db.saveOlympiad(olyData);
+    }
+
     const modal = document.getElementById('oly-modal');
     if (modal) modal.remove();
     this.render();
@@ -524,7 +682,7 @@ const GoalsManager = {
               </div>
               <div class="project-deadline-badge">
                 ${diffDays !== null ? `
-                  <span class="badge ${diffDays <= 5 ? 'badge-danger' : 'badge-purple'}">
+                  <span class="badge ${diffDays <= 5 && diffDays >= 0 ? 'badge-danger' : 'badge-purple'}">
                     Дедлайн: ${p.deadline} (${diffDays >= 0 ? `осталось ${diffDays} дн.` : 'дедлайн прошёл!'})
                   </span>
                 ` : ''}
@@ -703,10 +861,10 @@ const GoalsManager = {
       priority: isMain ? 'active' : 'secondary',
       status: 'in_progress',
       stages: [
-        { name: 'Проектирование и архитектура', done: false },
-        { name: 'Разработка прототипа', done: false },
-        { name: 'Тестирование и отладка', done: false },
-        { name: 'Презентация и защита', done: false }
+        { name: 'Проектирование системной архитектуры', done: false },
+        { name: 'Разработка прототипа ядра', done: false },
+        { name: 'Сборка клиентского интерфейса и тестирование', done: false },
+        { name: 'Финальная полировка, питч и демонстрация', done: false }
       ],
       tasks: [
         { id: 'pt_init', text: 'Первичное планирование архитектуры', done: false }
