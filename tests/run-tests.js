@@ -246,9 +246,10 @@ async function runAll26Scenarios() {
     const timetable = (await Database.getSchoolTimetable()).sort((a, b) => a.dayOfWeek - b.dayOfWeek);
     assert.strictEqual(timetable.length, 7);
     assert.deepStrictEqual(timetable.map(d => (d.lessons || []).length), [7, 8, 7, 8, 7, 4, 0]);
-    assert.strictEqual(timetable[0].lessons[0].subject, 'Информатика');
-    assert.strictEqual(timetable[0].lessons[0].startTime, '08:45');
-    assert.strictEqual(timetable[0].lessons[0].room, '218');
+    assert.strictEqual(timetable[0].lessons[0].subject, 'Классный час');
+    assert.strictEqual(timetable[0].lessons[1].subject, 'Информатика');
+    assert.strictEqual(timetable[0].lessons[1].startTime, '08:45');
+    assert.strictEqual(timetable[0].lessons[1].room, '218');
     assert.strictEqual(timetable[2].lessons[0].isTest, true);
     assert.strictEqual(timetable[5].lessons[3].endTime, '11:15');
     assert.ok(!timetable.flatMap(d => d.lessons || []).some(l => l.subject === 'Разговоры о важном'));
