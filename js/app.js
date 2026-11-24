@@ -416,110 +416,116 @@ const App = {
     const dateStr = (options && options.dateStr) || this.selectedDate || (timeLib ? timeLib.getTodayStr() : new Date().toISOString().split('T')[0]);
     this.selectedDate = dateStr;
     const schedule = await Database.getDaySchedule(dateStr);
-    if (!schedule || !schedule.tasks) return;
 
     let task = null;
     let taskIndex = -1;
-    if (typeof taskIdOrIndex === 'number') {
-      taskIndex = taskIdOrIndex;
-      task = schedule.tasks[taskIndex];
-    } else {
-      taskIndex = schedule.tasks.findIndex(t => t.id === taskIdOrIndex || (t.hwId && t.hwId === taskIdOrIndex));
-      task = schedule.tasks[taskIndex];
+    if (schedule && schedule.tasks) {
+      if (typeof taskIdOrIndex === 'number') {
+        taskIndex = taskIdOrIndex;
+        task = schedule.tasks[taskIndex];
+      } else {
+        taskIndex = schedule.tasks.findIndex(t => t.id === taskIdOrIndex || (t.hwId && t.hwId === taskIdOrIndex));
+        task = taskIndex >= 0 ? schedule.tasks[taskIndex] : null;
+      }
     }
-    if (!task) return;
+
+    // Поиск связанного ДЗ (по task.hwId или если передан сам ID ДЗ)
+    let hw = null;
+    if (task && task.hwId) {
+      hw = await Database.get('homework', task.hwId);
+    } else if (typeof taskIdOrIndex === 'string') {
+      hw = await Database.get('homework', taskIdOrIndex);
+    }
+
+    if (!task && !hw) return;
+
+    const completedAt = options.completedAt || (timeLib ? timeLib.getMoscowDate().toISOString() : new Date().toISOString());
+    const actualMin = options.actualMinutes || (task ? task.actualMinutes : null) || (hw ? hw.actualMinutes : null) || (task ? task.durationMinutes : null) || (hw ? hw.estimatedMinutes : 30) || 30;
 
     // 1. Статус "completed" (выполнено)
     if (newStatus === 'completed') {
-      task.status = 'completed';
-      task.completedAt = options.completedAt || (timeLib ? timeLib.getMoscowDate().toISOString() : new Date().toISOString());
-      const actualMin = options.actualMinutes || task.durationMinutes || 30;
-      task.actualMinutes = actualMin;
+      if (task) {
+        task.status = 'completed';
+        task.completedAt = completedAt;
+        task.actualMinutes = actualMin;
+      }
+      if (hw) {
+        hw.status = 'completed';
+        hw.completedAt = completedAt;
+        hw.actualMinutes = actualMin;
+        await Database.updateHomework(hw);
+      }
 
       // Журнал активности с дедупликацией по taskId / hwId
       await Database.logActivity({
-        taskId: task.id,
-        hwId: task.hwId || null,
-        category: task.category || 'routine',
-        title: task.title,
+        taskId: task ? task.id : ('hw_' + hw.id),
+        hwId: hw ? hw.id : (task ? task.hwId : null),
+        category: (task && task.category) || 'homework',
+        title: task ? task.title : `ДЗ: ${hw.subject} (${hw.title})`,
         action: 'completed',
         durationMinutes: actualMin,
         date: dateStr,
-        timestamp: task.completedAt
+        timestamp: completedAt
       });
-
-      // Синхронизация со связанным домашним заданием
-      if (task.hwId) {
-        const hw = await Database.get('homework', task.hwId);
-        if (hw) {
-          hw.status = 'completed';
-          hw.completedAt = task.completedAt;
-          hw.actualMinutes = actualMin;
-          await Database.updateHomework(hw);
-        }
-      }
     }
     // 2. Возврат в статус "pending" (отмена выполнения)
     else if (newStatus === 'pending') {
-      task.status = 'pending';
-      task.completedAt = null;
-      task.actualMinutes = null;
+      if (task) {
+        task.status = 'pending';
+        task.completedAt = null;
+        task.actualMinutes = null;
+      }
+      if (hw) {
+        hw.status = 'pending';
+        hw.completedAt = null;
+        hw.actualMinutes = null;
+        await Database.updateHomework(hw);
+      }
 
       // Удаление записи из журнала активности во избежание накрутки статистики
-      await Database.removeActivityByTaskId(task.id, task.hwId);
-
-      // Синхронизация с домашним заданием
-      if (task.hwId) {
-        const hw = await Database.get('homework', task.hwId);
-        if (hw) {
-          hw.status = 'pending';
-          hw.completedAt = null;
-          hw.actualMinutes = null;
-          await Database.updateHomework(hw);
-        }
-      }
+      await Database.removeActivityByTaskId(task ? task.id : null, hw ? hw.id : (task ? task.hwId : null));
     }
     // 3. Статус "skipped" (пропущено)
     else if (newStatus === 'skipped') {
-      task.status = 'skipped';
-      task.completedAt = null;
-      await Database.removeActivityByTaskId(task.id, task.hwId);
-
-      if (task.hwId) {
-        const hw = await Database.get('homework', task.hwId);
-        if (hw) {
-          hw.status = 'skipped';
-          await Database.updateHomework(hw);
-        }
+      if (task) {
+        task.status = 'skipped';
+        task.completedAt = null;
       }
+      if (hw) {
+        hw.status = 'skipped';
+        await Database.updateHomework(hw);
+      }
+      await Database.removeActivityByTaskId(task ? task.id : null, hw ? hw.id : (task ? task.hwId : null));
     }
     // 4. Реальный перенос "rescheduled"
     else if (newStatus === 'rescheduled') {
       const targetDate = options.targetDate || (timeLib ? timeLib.getTomorrowStr(dateStr) : null);
-      task.status = 'rescheduled';
-      task.rescheduledTo = targetDate;
-      task.rescheduledAt = new Date().toISOString();
-      await Database.removeActivityByTaskId(task.id, task.hwId);
-
-      if (task.hwId && targetDate) {
-        const hw = await Database.get('homework', task.hwId);
-        if (hw) {
-          hw.dueDate = targetDate;
-          hw.status = 'pending';
-          await Database.updateHomework(hw);
-        }
+      if (task) {
+        task.status = 'rescheduled';
+        task.rescheduledTo = targetDate;
+        task.rescheduledAt = new Date().toISOString();
       }
+      if (hw && targetDate) {
+        hw.dueDate = targetDate;
+        hw.status = 'pending';
+        await Database.updateHomework(hw);
+      }
+      await Database.removeActivityByTaskId(task ? task.id : null, hw ? hw.id : (task ? task.hwId : null));
 
       if (targetDate && targetDate !== dateStr) {
-        await AIPlanner.autoReplan(targetDate, Database, `Принят перенос задачи: ${task.title}`);
+        const itemTitle = (task && task.title) || (hw && hw.title) || 'задача';
+        await AIPlanner.autoReplan(targetDate, Database, `Принят перенос задачи: ${itemTitle}`);
       }
     }
 
     // Сохранение обновлённого расписания
-    await Database.saveDaySchedule(schedule);
+    if (schedule) {
+      await Database.saveDaySchedule(schedule);
+    }
 
     // Автоперепланирование текущего дня без лишних подтверждений
-    await AIPlanner.autoReplan(dateStr, Database, `Изменение статуса задачи «${task.title}» на ${newStatus}`);
+    const taskTitle = (task && task.title) || (hw && hw.title) || 'задача';
+    await AIPlanner.autoReplan(dateStr, Database, `Изменение статуса задачи «${taskTitle}» на ${newStatus}`);
 
     this.renderTodayView();
     if (typeof HomeworkManager !== 'undefined' && HomeworkManager.render) {
@@ -609,9 +615,23 @@ const App = {
   },
 
   async replanToday() {
-    await AIPlanner.autoReplan(this.selectedDate, Database, 'Ручной запуск перепланирования');
-    this.renderTodayView();
-    this.showToast('Расписание успешно оптимизировано и перестроено!', 'success');
+    try {
+      const res = await AIPlanner.autoReplan(this.selectedDate, Database, 'Ручной запуск перепланирования', true);
+      this.renderTodayView();
+      if (res && res.success === true) {
+        if (res.skipped) {
+          this.showToast('Расписание актуально. Входные данные не изменились.', 'info');
+        } else {
+          this.showToast('Расписание успешно оптимизировано и перестроено!', 'success');
+        }
+      } else if (res && res.throttled) {
+        this.showToast(res.reason || 'Слишком частые запросы на перепланирование. Подождите несколько секунд.', 'warning');
+      } else {
+        this.showToast((res && res.reason) || 'Не удалось перепланировать день. Попробуйте позже.', 'error');
+      }
+    } catch (err) {
+      this.showToast('Ошибка при перепланировании: ' + (err.message || err), 'error');
+    }
   },
 
   async rollbackToday() {

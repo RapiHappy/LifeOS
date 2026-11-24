@@ -495,6 +495,48 @@ async function runAll20Scenarios() {
     logs = await Database.getAll('activity_log');
     taskLog = logs.find(l => l.hwId === hwId || l.taskId === taskId);
     assert.strictEqual(taskLog, undefined, 'При возврате задачи в pending лог выполнения должен быть удалён');
+
+    // 3. Проверка через HomeworkManager (делегирование без дублирования с сохранением actualMinutes)
+    await HomeworkManager.confirmComplete(hwId);
+    updatedHw = await Database.get('homework', hwId);
+    assert.strictEqual(updatedHw.status, 'completed');
+    assert.strictEqual(updatedHw.actualMinutes, 30);
+
+    await HomeworkManager.toggleComplete(hwId);
+    updatedHw = await Database.get('homework', hwId);
+    assert.strictEqual(updatedHw.status, 'pending');
+  });
+
+  // -------------------------------------------------------------------------
+  // СЦЕНАРИЙ 10b: App.replanToday(): проверка статуса, успех только при success===true, предупреждение при throttling
+  // -------------------------------------------------------------------------
+  await runScenario('10b', 'App.replanToday(): проверка статуса, успех только при success===true, предупреждение при throttling', async () => {
+    let lastToast = null;
+    const originalShowToast = App.showToast.bind(App);
+    App.showToast = (msg, type) => {
+      lastToast = { msg, type };
+      originalShowToast(msg, type);
+    };
+
+    try {
+      AIPlanner.resetThrottle();
+
+      // 1. Успешный запуск
+      await App.replanToday();
+      assert.ok(lastToast, 'Toast должен быть вызван');
+      assert.strictEqual(lastToast.type, 'success', 'При успехе тип тоста должен быть success');
+      assert.ok(lastToast.msg.includes('успешно') || lastToast.msg.includes('актуально'));
+
+      // 2. Имитация троттлинга (более 5 вызовов подряд)
+      for (let i = 0; i < 6; i++) {
+        await App.replanToday();
+      }
+      assert.ok(lastToast);
+      assert.strictEqual(lastToast.type, 'warning', 'При throttling тип тоста должен быть warning');
+      assert.ok(lastToast.msg.includes('Слишком частые запросы') || lastToast.msg.includes('Превышен лимит') || lastToast.msg.includes('троттлинг'));
+    } finally {
+      App.showToast = originalShowToast;
+    }
   });
 
   // -------------------------------------------------------------------------
@@ -662,6 +704,33 @@ async function runAll20Scenarios() {
   });
 
   // -------------------------------------------------------------------------
+  // СЦЕНАРИЙ 15b: Удаление BACKUP_KEY до ранних выходов из getSettings() при отсутствии основной записи
+  // -------------------------------------------------------------------------
+  await runScenario('15b', 'Удаление BACKUP_KEY до ранних выходов из getSettings() при отсутствии основной записи SETTINGS_KEY', async () => {
+    localStorage.clear();
+    sessionStorage.clear();
+
+    // Записываем ТОЛЬКО резервную копию, без SETTINGS_KEY
+    localStorage.setItem('lifeos_settings_legacy_backup', JSON.stringify({
+      aiApiKey: 'sk-ant-orphan-secret-key-12345'
+    }));
+    assert.strictEqual(localStorage.getItem('lifeos_settings'), null, 'Основной ключ настроек должен отсутствовать');
+
+    // Вызываем getSettings()
+    const settings = Database.getSettings();
+
+    // 1. BACKUP_KEY обязан быть удалён до любого раннего возврата
+    assert.strictEqual(localStorage.getItem('lifeos_settings_legacy_backup'), null, 'BACKUP_KEY должен быть удален даже при отсутствии SETTINGS_KEY');
+
+    // 2. Должно быть выставлено предупреждение об отзыве ключа
+    assert.strictEqual(sessionStorage.getItem('lifeos_revocation_warning'), 'true', 'Должен быть выставлен флаг lifeos_revocation_warning');
+
+    // 3. Возвращённые настройки валидны и безопасны
+    assert.strictEqual(settings.aiApiKey, undefined);
+    assert.strictEqual(settings.version, '1.2');
+  });
+
+  // -------------------------------------------------------------------------
   // СЦЕНАРИЙ 16: Безопасный импорт с пред-импортным снапшотом и санитизацией
   // -------------------------------------------------------------------------
   await runScenario(16, 'Безопасный импорт с пред-импортным снапшотом, валидацией схемы и очисткой ключей', async () => {
@@ -692,6 +761,90 @@ async function runAll20Scenarios() {
     assert.strictEqual(importedSettings.wakeTime, '06:30');
     assert.strictEqual(importedSettings.aiApiKey, undefined, 'Импортированные настройки должны быть очищены от aiApiKey');
     assert.strictEqual(localStorage.getItem('lifeos_settings_legacy_backup'), null);
+  });
+
+  // -------------------------------------------------------------------------
+  // СЦЕНАРИЙ 16b: Откат импорта при ошибке после частичной записи (восстановление ВСЕХ хранилищ, включая activity_log и replan_history)
+  // -------------------------------------------------------------------------
+  await runScenario('16b', 'Откат импорта при ошибке после частичной записи (восстановление всех хранилищ, включая activity_log и replan_history)', async () => {
+    // 1. Заполняем базу исходными данными
+    const testHwId = await Database.addHomework({
+      subject: 'Химия',
+      title: 'Контрольная работа',
+      dueDate: '2026-11-23',
+      estimatedMinutes: 45
+    });
+
+    const preActivityId = 'act_pre_rollback_test';
+    await Database.logActivity({
+      id: preActivityId,
+      taskId: 'task_pre_test',
+      title: 'Пре-импортная активность',
+      durationMinutes: 45,
+      date: '2026-11-23',
+      action: 'completed'
+    });
+
+    await Database.addReplanHistory({
+      date: '2026-11-23',
+      timestamp: new Date().toISOString(),
+      reason: 'Пре-импортная история перепланирования',
+      mode: 'normal'
+    });
+
+    const preActivities = await Database.getAll('activity_log');
+    const preHistory = await Database.getAll('replan_history');
+    assert.ok(preActivities.some(a => a.id === preActivityId || a.taskId === 'task_pre_test'));
+    assert.ok(preHistory.length > 0);
+
+    // 2. Создаём повреждённый пакет для импорта, в котором первые хранилища валидны,
+    // но при записи в projects вызывается сбой (имитация частичной записи)
+    const originalPut = Database.put.bind(Database);
+    let putCallCount = 0;
+    Database.put = async function(storeName, item) {
+      if (storeName === 'projects' && putCallCount++ === 0) {
+        throw new Error('Имитация аппаратного сбоя IndexedDB при записи в projects');
+      }
+      return originalPut(storeName, item);
+    };
+
+    const partialFailurePayload = JSON.stringify({
+      version: '1.2',
+      settings: { wakeTime: '05:00' },
+      schedule_days: [{ date: '2026-11-23', tasks: [{ id: 'corrupted_task', title: 'Битый план' }] }],
+      homework: [{ id: 'hw_corrupted', title: 'Би ДЗ', dueDate: '2026-11-23' }],
+      school_timetable: [],
+      ege_topics: [],
+      olympiads: [],
+      projects: [{ id: 'proj_fail', title: 'Сбойный проект' }],
+      replan_history: [{ id: 999, reason: 'Битый лог' }],
+      activity_log: [{ id: 'act_corrupted', title: 'Битый лог' }]
+    });
+
+    let importFailed = false;
+    try {
+      await Database.importAllData(partialFailurePayload);
+    } catch (err) {
+      importFailed = true;
+      assert.ok(err.message.includes('Импорт прерван') || err.message.includes('Имитация'));
+    } finally {
+      Database.put = originalPut;
+    }
+
+    assert.strictEqual(importFailed, true, 'Импорт должен завершиться ошибкой');
+
+    // 3. Проверяем полное восстановление ВСЕХ хранилищ из снимка
+    const restoredHw = await Database.get('homework', testHwId);
+    assert.ok(restoredHw, 'Домашнее задание должно быть полностью восстановлено');
+    assert.strictEqual(restoredHw.title, 'Контрольная работа');
+
+    const restoredActivities = await Database.getAll('activity_log');
+    assert.ok(restoredActivities.some(a => a.id === preActivityId || a.taskId === 'task_pre_test'), 'activity_log обязан быть восстановлен');
+    assert.strictEqual(restoredActivities.some(a => a.id === 'act_corrupted'), false, 'Битые записи activity_log должны быть удалены');
+
+    const restoredHistory = await Database.getAll('replan_history');
+    assert.ok(restoredHistory.length > 0, 'replan_history обязан быть восстановлен');
+    assert.strictEqual(restoredHistory.some(h => h.id === 999 || (h.reason && h.reason.includes('Битый'))), false, 'Битые записи replan_history должны быть удалены');
   });
 
   // -------------------------------------------------------------------------

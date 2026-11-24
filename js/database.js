@@ -181,16 +181,34 @@ const Database = {
   getSettings() {
     try {
       if (typeof localStorage === 'undefined') return { ...this.defaultSettings };
+
+      // 1. Безопасность: немедленное удаление BACKUP_KEY ДО любых ранних выходов из getSettings()
+      try {
+        if (localStorage.getItem(BACKUP_KEY)) {
+          localStorage.removeItem(BACKUP_KEY);
+          if (typeof sessionStorage !== 'undefined') {
+            sessionStorage.setItem('lifeos_revocation_warning', 'true');
+          }
+          console.warn('LifeOS Security: обнаружен и полностью удалён устаревший бэкап с API-ключом (BACKUP_KEY). Рекомендуем отозвать его у провайдера.');
+        }
+      } catch (errBackup) {}
+
+      // 2. Обработка случая, когда основной записи настроек нет
       const raw = localStorage.getItem(SETTINGS_KEY);
       if (!raw) return { ...this.defaultSettings };
-      const parsed = JSON.parse(raw);
 
-      // Безопасность: немедленное и полное удаление aiApiKey из активных настроек и LocalStorage
-      if (parsed.aiApiKey) {
+      let parsed = {};
+      try {
+        parsed = JSON.parse(raw);
+      } catch (e) {
+        return { ...this.defaultSettings };
+      }
+
+      // 3. Безопасность: немедленное и полное удаление aiApiKey из активных настроек и LocalStorage
+      if (parsed && parsed.aiApiKey) {
         delete parsed.aiApiKey;
         try {
           localStorage.setItem(SETTINGS_KEY, JSON.stringify(parsed));
-          localStorage.removeItem(BACKUP_KEY);
           if (typeof sessionStorage !== 'undefined') {
             sessionStorage.setItem('lifeos_revocation_warning', 'true');
           }
@@ -200,12 +218,14 @@ const Database = {
         }
       }
 
-      // Удаляем любые остаточные открытые копии ключей
-      if (typeof localStorage !== 'undefined' && localStorage.getItem(BACKUP_KEY)) {
-        localStorage.removeItem(BACKUP_KEY);
-      }
+      // Гарантированное удаление BACKUP_KEY при выходе
+      try {
+        if (localStorage.getItem(BACKUP_KEY)) {
+          localStorage.removeItem(BACKUP_KEY);
+        }
+      } catch (e) {}
 
-      return { ...this.defaultSettings, ...parsed };
+      return { ...this.defaultSettings, ...(parsed || {}) };
     } catch (e) {
       console.warn('Failed to parse settings from LocalStorage', e);
       return { ...this.defaultSettings };
@@ -972,6 +992,14 @@ const Database = {
         if (Array.isArray(rollback.projects)) {
           await this.clearStore('projects');
           for (const item of rollback.projects) await this.put('projects', item);
+        }
+        if (Array.isArray(rollback.replan_history)) {
+          await this.clearStore('replan_history');
+          for (const item of rollback.replan_history) await this.put('replan_history', item);
+        }
+        if (Array.isArray(rollback.activity_log)) {
+          await this.clearStore('activity_log');
+          for (const item of rollback.activity_log) await this.put('activity_log', item);
         }
       } catch (rollbackErr) {
         console.error('Критический сбой отката импорта:', rollbackErr);

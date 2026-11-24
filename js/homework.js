@@ -22,6 +22,10 @@ const HomeworkManager = {
     return t ? t.getTomorrowStr() : new Date(Date.now() + 86400000).toISOString().split('T')[0];
   },
 
+  getDb() {
+    return this.db || (typeof Database !== 'undefined' ? Database : (typeof globalThis !== 'undefined' && globalThis.Database ? globalThis.Database : null));
+  },
+
   init(db) {
     this.db = db;
     this.render();
@@ -193,62 +197,30 @@ const HomeworkManager = {
   },
 
   async toggleComplete(id) {
-    const hw = await this.db.get('homework', id);
+    const db = this.getDb();
+    const hw = db ? await db.get('homework', id) : null;
     if (!hw) return;
 
-    const todayStr = this.getTodayString();
-    const todaySchedule = await this.db.getDaySchedule(todayStr);
+    const newStatus = hw.status === 'completed' ? 'pending' : 'completed';
 
-    if (hw.status === 'completed') {
-      hw.status = 'pending';
-      hw.completedAt = null;
-      hw.actualMinutes = null;
-      await this.db.removeActivityByTaskId(null, hw.id);
-
-      if (todaySchedule && todaySchedule.tasks) {
-        const task = todaySchedule.tasks.find(t => t.hwId === id);
-        if (task) {
-          task.status = 'pending';
-          task.completedAt = null;
-          task.actualMinutes = null;
-          await this.db.saveDaySchedule(todaySchedule);
-        }
-      }
-    } else {
-      hw.status = 'completed';
-      hw.completedAt = new Date().toISOString();
-      const actual = hw.actualMinutes || hw.estimatedMinutes || 30;
-      hw.actualMinutes = actual;
-
-      await this.db.logActivity({
-        hwId: hw.id,
-        category: 'homework',
-        title: `ДЗ: ${hw.subject} (${hw.title})`,
-        durationMinutes: actual,
-        date: todayStr,
-        timestamp: hw.completedAt
+    // Единый конвейер изменения статусов (делегирование в App.updateTaskStatus)
+    if (typeof App !== 'undefined' && App.updateTaskStatus) {
+      await App.updateTaskStatus(id, newStatus, {
+        actualMinutes: hw.actualMinutes || hw.estimatedMinutes || 30
       });
-
-      if (todaySchedule && todaySchedule.tasks) {
-        const task = todaySchedule.tasks.find(t => t.hwId === id);
-        if (task) {
-          task.status = 'completed';
-          task.completedAt = hw.completedAt;
-          task.actualMinutes = actual;
-          await this.db.saveDaySchedule(todaySchedule);
-        }
-      }
+    } else if (db) {
+      hw.status = newStatus;
+      await db.updateHomework(hw);
     }
-
-    await this.db.updateHomework(hw);
-    await AIPlanner.autoReplan(todayStr, this.db, 'Отметка выполнения домашнего задания');
 
     this.render();
     if (window.App && typeof window.App.refreshCurrentView === 'function') window.App.refreshCurrentView();
   },
 
   openCompleteModal(id) {
-    this.db.get('homework', id).then(hw => {
+    const db = this.getDb();
+    if (!db) return;
+    db.get('homework', id).then(hw => {
       if (!hw) return;
       const modalId = 'hw-complete-modal';
       let modal = document.getElementById(modalId);
@@ -283,43 +255,26 @@ const HomeworkManager = {
   },
 
   async confirmComplete(id) {
-    const hw = await this.db.get('homework', id);
+    const db = this.getDb();
+    const hw = db ? await db.get('homework', id) : null;
     if (!hw) return;
 
     const actualInput = document.getElementById('actual-minutes-input');
     const actual = Number(actualInput ? actualInput.value : hw.estimatedMinutes) || 30;
-    const todayStr = this.getTodayString();
-
-    hw.status = 'completed';
-    hw.completedAt = new Date().toISOString();
-    hw.actualMinutes = actual;
-
-    await this.db.updateHomework(hw);
-
-    await this.db.logActivity({
-      hwId: hw.id,
-      category: 'homework',
-      title: `ДЗ: ${hw.subject} (${hw.title})`,
-      durationMinutes: actual,
-      date: todayStr,
-      timestamp: hw.completedAt
-    });
-
-    const todaySchedule = await this.db.getDaySchedule(todayStr);
-    if (todaySchedule && todaySchedule.tasks) {
-      const task = todaySchedule.tasks.find(t => t.hwId === id);
-      if (task) {
-        task.status = 'completed';
-        task.completedAt = hw.completedAt;
-        task.actualMinutes = actual;
-        await this.db.saveDaySchedule(todaySchedule);
-      }
-    }
 
     const modal = document.getElementById('hw-complete-modal');
     if (modal) modal.remove();
 
-    await AIPlanner.autoReplan(todayStr, this.db, 'Завершение ДЗ с фактическим временем');
+    // Единый конвейер изменения статусов с фактическим временем (App.updateTaskStatus)
+    if (typeof App !== 'undefined' && App.updateTaskStatus) {
+      await App.updateTaskStatus(id, 'completed', {
+        actualMinutes: actual
+      });
+    } else if (db) {
+      hw.status = 'completed';
+      hw.actualMinutes = actual;
+      await db.updateHomework(hw);
+    }
 
     this.render();
     if (window.App && typeof window.App.refreshCurrentView === 'function') window.App.refreshCurrentView();
