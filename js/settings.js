@@ -65,36 +65,43 @@ const SettingsManager = {
 
             <div class="form-row">
               <div class="form-group col">
+                <label>Время на дорогу в школу (минут)</label>
+                <input type="number" id="set-commute-min" class="form-control" min="5" max="120" value="${s.commuteMinutes !== undefined ? s.commuteMinutes : 25}" required>
+                <small class="text-muted">Интервал на дорогу перед 1-м уроком</small>
+              </div>
+              <div class="form-group col">
                 <label>Игры на ПК (минут ежедневно)</label>
                 <input type="number" id="set-game-min" class="form-control" min="30" max="120" value="${s.gameMinutes !== undefined ? s.gameMinutes : 60}" required>
                 <small class="text-muted">Запланированный блок, не сокращается из-за уроков</small>
-              </div>
-              <div class="form-group col">
-                <label>Спорт / Разминка (минут)</label>
-                <input type="number" id="set-sport-min" class="form-control" min="15" max="60" value="${s.sportMinutes !== undefined ? s.sportMinutes : 30}" required>
-                <small class="text-muted">Двигательная активность для осанки и здоровья</small>
               </div>
             </div>
 
             <div class="form-row">
               <div class="form-group col">
+                <label>Спорт / Разминка (минут)</label>
+                <input type="number" id="set-sport-min" class="form-control" min="15" max="60" value="${s.sportMinutes !== undefined ? s.sportMinutes : 30}" required>
+                <small class="text-muted">Двигательная активность для осанки и здоровья</small>
+              </div>
+              <div class="form-group col">
                 <label>Ужин с родителями / Семья (минут)</label>
                 <input type="number" id="set-family-min" class="form-control" min="15" max="90" value="${s.familyMinutes !== undefined ? s.familyMinutes : 40}" required>
               </div>
+            </div>
+
+            <div class="form-row">
               <div class="form-group col">
                 <label>Отдых без ПК перед сном (минут)</label>
                 <input type="number" id="set-rest-min" class="form-control" min="20" max="90" value="${s.offlineRestMinutes !== undefined ? s.offlineRestMinutes : 30}" required>
               </div>
-            </div>
-
-            <div class="form-group">
-              <label>Режим автопланирования расписания</label>
-              <select id="set-active-mode" class="form-control">
-                <option value="auto" ${s.activeMode === 'auto' ? 'selected' : ''}>🤖 Автоматическое определение (рекомендуется)</option>
-                <option value="normal" ${s.activeMode === 'normal' ? 'selected' : ''}>Обычный режим (сбалансированный)</option>
-                <option value="loaded" ${s.activeMode === 'loaded' ? 'selected' : ''}>Загруженный режим (фокус на уроках и ДЗ)</option>
-                <option value="competitive" ${s.activeMode === 'competitive' ? 'selected' : ''}>Соревновательный режим (фокус на хакатоне / проектах)</option>
-              </select>
+              <div class="form-group col">
+                <label>Режим автопланирования расписания</label>
+                <select id="set-active-mode" class="form-control">
+                  <option value="auto" ${s.activeMode === 'auto' ? 'selected' : ''}>🤖 Автоматическое определение (рекомендуется)</option>
+                  <option value="normal" ${s.activeMode === 'normal' ? 'selected' : ''}>Обычный режим (сбалансированный)</option>
+                  <option value="loaded" ${s.activeMode === 'loaded' ? 'selected' : ''}>Загруженный режим (фокус на уроках и ДЗ)</option>
+                  <option value="competitive" ${s.activeMode === 'competitive' ? 'selected' : ''}>Соревновательный режим (фокус на хакатоне / проектах)</option>
+                </select>
+              </div>
             </div>
 
             <button type="submit" class="btn btn-primary btn-sm">Сохранить режим дня</button>
@@ -262,33 +269,30 @@ const SettingsManager = {
           <div class="section-card-header">
             <div>
               <h3>ИИ-Планировщик и интеграция</h3>
-              <p class="text-muted">По умолчанию LifeOS работает на 100% автономном локальном алгоритме. Секретные ключи не сохраняются в браузере.</p>
+              <p class="text-muted">LifeOS работает на 100% автономном локальном алгоритме без передачи данных. Секретные ключи не сохраняются в браузере.</p>
             </div>
           </div>
 
           <form onsubmit="SettingsManager.saveAiSettings(event)">
             <div class="form-group">
-              <label>URL защищённого прокси-эндпоинта (Cloudflare Worker / Backend API)</label>
+              <label>URL защищённого прокси-эндпоинта (HTTPS / Backend API)</label>
               <input type="url" id="set-ai-endpoint" class="form-control" value="${s.aiEndpoint || ''}" placeholder="https://my-lifeos-worker.username.workers.dev/plan">
-              <small class="text-muted">Если поле пустое, расписание рассчитывается встроенным детерминированным планировщиком без внешних запросов.</small>
+              <small class="text-muted">Если поле пустое, расписание рассчитывается встроенным детерминированным планировщиком без внешних запросов. Внешний ИИ подключается только через защищённый серверный прокси.</small>
             </div>
 
             <button type="submit" class="btn btn-primary btn-sm">Сохранить эндпоинт ИИ</button>
           </form>
 
           ${(() => {
-            const hasLegacy = typeof localStorage !== 'undefined' && localStorage.getItem('lifeos_settings_legacy_backup');
-            if (hasLegacy) {
+            const hasRevocationWarning = typeof sessionStorage !== 'undefined' && sessionStorage.getItem('lifeos_revocation_warning');
+            if (hasRevocationWarning) {
               return `
-                <div style="margin-top: 12px; padding: 10px 14px; background: #fffbeb; border: 1px solid #fef3c7; border-radius: 6px; font-size: 13px;">
-                  🔒 <strong>Архивная копия устаревшего API-ключа:</strong> обнаружена и изолирована от активных настроек.<br>
-                  <button type="button" class="btn btn-outline-danger btn-sm" style="margin-top: 6px;" onclick="SettingsManager.deleteLegacyBackup()">
-                    🗑️ Очистить архивный бэкап
-                  </button>
+                <div style="margin-top: 12px; padding: 10px 14px; background: #fff1f2; border: 1px solid #fecdd3; border-radius: 6px; font-size: 13px; color: #9f1239;">
+                  ⚠️ <strong>Внимание безопасности:</strong> в предыдущей конфигурации был обнаружен сохранённый API-ключ. Он был безвозвратно удалён из локального хранилища в целях защиты данных. Рекомендуется отозвать данный ключ в панели провайдера API.
                 </div>
               `;
             }
-            return '<div style="margin-top: 10px; font-size: 13px; color: #10b981;">✅ В браузере отсутствуют секретные API-ключи. Приложение полностью безопасно.</div>';
+            return '<div style="margin-top: 10px; font-size: 13px; color: #10b981;">✅ В браузере отсутствуют секретные API-ключи. LifeOS работает полностью локально и безопасно.</div>';
           })()}
         </div>
 
@@ -323,7 +327,7 @@ const SettingsManager = {
                 Отметить как непроверенное
               </button>
             `}
-            <button class="btn btn-secondary btn-sm" onclick="if (window.App) window.App.switchView('school')">
+            <button class="btn btn-secondary btn-sm" onclick="if (window.App) window.App.navigateTo('school')">
               🏫 Перейти к редактированию уроков
             </button>
           </div>
@@ -404,6 +408,7 @@ const SettingsManager = {
     const newSettings = {
       wakeTime: document.getElementById('set-wake-time').value,
       sleepStart: document.getElementById('set-sleep-start').value,
+      commuteMinutes: Number(document.getElementById('set-commute-min').value) || 25,
       gameMinutes: Number(document.getElementById('set-game-min').value) || 60,
       sportMinutes: Number(document.getElementById('set-sport-min').value) || 30,
       familyMinutes: Number(document.getElementById('set-family-min').value) || 40,

@@ -161,9 +161,10 @@ const Scheduler = {
     });
     markOccupied(wakeMin, wakeMin + 90, 'morning');
 
-    // 2. Школьные уроки из расписания
+    // 2. Школьные уроки из расписания (только при подтверждении или в демо-режиме)
     let schoolEndMin = wakeMin + 90;
-    const dayTimetable = timetable.find(t => t.dayOfWeek === dayOfWeek);
+    const isSchoolActive = settings.schoolTimetableConfirmed === true || settings.isDemoMode === true;
+    const dayTimetable = isSchoolActive ? timetable.find(t => t.dayOfWeek === dayOfWeek) : null;
 
     let has8thLesson = false;
     let actualLessonsCount = 0;
@@ -173,16 +174,17 @@ const Scheduler = {
       actualLessonsCount = activeLessons.length;
 
       if (activeLessons.length > 0) {
-        // Дорога в школу перед первым уроком (25 минут)
+        // Дорога в школу перед первым уроком (настраиваемое время, по умолчанию 25 мин)
+        const commuteMinutes = Number(settings.commuteMinutes) || 25;
         const firstLesson = activeLessons[0];
         const firstStart = this.timeToMin(firstLesson.startTime);
-        const roadStart = Math.max(wakeMin + 90, firstStart - 25);
+        const roadStart = Math.max(wakeMin + 90, firstStart - commuteMinutes);
 
         if (firstStart > roadStart) {
           tasks.push({
             id: `road_to_school_${dateStr}`,
             title: 'Дорога в школу',
-            subtitle: 'Прогулка до школы, подготовка к 1 уроку',
+            subtitle: `Прогулка до школы (${commuteMinutes} мин), подготовка к 1 уроку`,
             startTime: this.minToTime(roadStart),
             endTime: firstLesson.startTime,
             durationMinutes: firstStart - roadStart,
@@ -576,9 +578,12 @@ const Scheduler = {
             if (item.remainingMinutes <= slot.duration) {
               const dur = item.remainingMinutes;
               const titleSuffix = partNumber > 1 ? ` (Часть ${partNumber})` : '';
+              const taskId = item.hwId
+                ? (partNumber > 1 ? `task_hw_${item.hwId}_p${partNumber}` : `task_hw_${item.hwId}`)
+                : `task_${item.category || 'act'}_${dateStr}_${tasks.length + 1}`;
 
               tasks.push({
-                id: `task_${dateStr}_${tasks.length + 1}`,
+                id: taskId,
                 title: `${item.title}${titleSuffix}`,
                 subtitle: item.subtitle,
                 startTime: this.minToTime(slot.start),
@@ -602,9 +607,12 @@ const Scheduler = {
             else if (slot.duration >= 20) {
               const dur = slot.duration;
               const titleSuffix = ` (Часть ${partNumber})`;
+              const taskId = item.hwId
+                ? `task_hw_${item.hwId}_p${partNumber}`
+                : `task_${item.category || 'act'}_${dateStr}_${tasks.length + 1}`;
 
               tasks.push({
-                id: `task_${dateStr}_${tasks.length + 1}`,
+                id: taskId,
                 title: `${item.title}${titleSuffix}`,
                 subtitle: `${item.subtitle} [${dur} из ${item.totalMinutes} мин]`,
                 startTime: this.minToTime(slot.start),
@@ -664,6 +672,9 @@ const Scheduler = {
       mode: mode,
       modeReason: modeInfo.reason,
       has8thLesson: has8thLesson,
+      hasSchoolTimetable: actualLessonsCount > 0,
+      isSchoolConfirmed: isSchoolActive,
+      schoolNotice: isSchoolActive ? null : 'Школьное расписание уроков ещё не подтверждено: фиктивные уроки не включены в план дня.',
       schoolEndTime: this.minToTime(actualSchoolEndMin),
       yastuTime: yastuBlock.startTime,
       unallocatedMinutes: unallocatedMinutes,

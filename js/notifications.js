@@ -209,7 +209,8 @@ const NotificationsManager = {
 
     container.appendChild(toast);
 
-    requestAnimationFrame(() => {
+    const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (cb) => setTimeout(cb, 16);
+    raf(() => {
       toast.style.opacity = '1';
       toast.style.transform = 'translateY(0)';
     });

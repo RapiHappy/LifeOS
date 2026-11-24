@@ -1080,3 +1080,46 @@
   margin-bottom: 1rem;
   font-size: 0.95rem;
 }
+
+/* ВСПЛЫВАЮЩИЕ УВЕДОМЛЕНИЯ (TOASTS) */
+.toast-container {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.toast-message {
+  background: #1e293b;
+  color: #ffffff;
+  padding: 12px 18px;
+  border-radius: var(--radius-md);
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  font-size: 0.9rem;
+  max-width: 380px;
+  opacity: 0;
+  transform: translateY(12px);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  pointer-events: auto;
+}
+
+.toast-message.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.toast-message.toast-success {
+  background: #059669;
+}
+
+.toast-message.toast-warning {
+  background: #d97706;
+}
+
+.toast-message.toast-error {
+  background: #dc2626;
+}

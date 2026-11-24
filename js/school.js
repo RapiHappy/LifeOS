@@ -45,14 +45,70 @@ const SchoolManager = {
   },
 
   async confirmTimetable() {
+    const timetable = await this.db.getSchoolTimetable();
+    const totalLessons = timetable.reduce((acc, d) => acc + (d.lessons ? d.lessons.length : 0), 0);
+    if (totalLessons === 0) {
+      alert('В расписании пока нет ни одного урока. Добавьте уроки вашей школы или выберите типовой шаблон перед подтверждением.');
+      return;
+    }
+    this.openConfirmPreviewModal(timetable);
+  },
+
+  openConfirmPreviewModal(timetable) {
+    const modalId = 'confirm-timetable-modal';
+    let modal = document.getElementById(modalId);
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = modalId;
+      modal.className = 'modal-backdrop';
+      document.body.appendChild(modal);
+    }
+
+    const daysSummary = this.daysNames.map(d => {
+      const dayData = timetable.find(t => t.dayOfWeek === d.id);
+      const count = dayData && dayData.lessons ? dayData.lessons.filter(l => !l.isCanceled).length : 0;
+      const lessonTitles = dayData && dayData.lessons ? dayData.lessons.filter(l => !l.isCanceled).map(l => l.subject).join(', ') : 'нет уроков';
+      return `
+        <div style="border-bottom: 1px solid #f1f5f9; padding: 6px 0; font-size: 13px;">
+          <strong>${d.name}:</strong> ${count} уроков ${count > 0 ? `<span class="text-muted" style="font-size: 12px;">(${lessonTitles})</span>` : ''}
+        </div>
+      `;
+    }).join('');
+
+    modal.innerHTML = `
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>Проверка и подтверждение расписания</h3>
+          <button class="modal-close-btn" onclick="document.getElementById('${modalId}').remove()">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p>Пожалуйста, проверьте уроки перед подтверждением. Автопланировщик будет использовать эти данные для планирования вашего дня:</p>
+          <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 10px; margin: 12px 0; max-height: 240px; overflow-y: auto;">
+            ${daysSummary}
+          </div>
+          <p style="font-size: 13px; color: #475569;">Вы подтверждаете, что данное расписание соответствует вашей реальной школе?</p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" onclick="document.getElementById('${modalId}').remove()">Отмена / Редактировать</button>
+          <button type="button" class="btn btn-primary" onclick="SchoolManager.executeConfirmTimetable()">✓ Да, подтверждаю расписание</button>
+        </div>
+      </div>
+    `;
+  },
+
+  async executeConfirmTimetable() {
     this.db.saveSettings({
       schoolTimetableConfirmed: true,
       schoolTimetableOrigin: 'user_confirmed'
     });
+    const modal = document.getElementById('confirm-timetable-modal');
+    if (modal) modal.remove();
+
     const todayStr = this.getTodayString();
-    await AIPlanner.autoReplan(todayStr, this.db, 'Подтверждение школьного расписания');
+    await AIPlanner.autoReplan(todayStr, this.db, 'Подтверждение проверенного школьного расписания');
     this.render();
     if (window.App && typeof window.App.refreshCurrentView === 'function') window.App.refreshCurrentView();
+    alert('Школьное расписание успешно подтверждено и синхронизировано с рабочим планом дня!');
   },
 
   async markAsUnconfirmed() {
@@ -89,15 +145,28 @@ const SchoolManager = {
     const hasLesson7 = activeSchool.some(l => l.lessonNumber === 7);
     const hasGap7 = hasLesson8 && !hasLesson7;
 
+    const totalTimetableLessons = timetable.reduce((acc, d) => acc + (d.lessons ? d.lessons.length : 0), 0);
+
     let html = `
-      <!-- Статус подтверждения расписания -->
-      ${!isConfirmed ? `
-        <div class="school-unconfirmed-banner" style="background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 12px 16px; margin-bottom: 1rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap;">
-          <div style="color: #92400e; font-size: 0.95rem;">
-            <strong>⚠️ Расписание не подтверждено:</strong> Сейчас показан ориентировочный шаблон 10 класса. Пожалуйста, подтвердите его или внесите реальные уроки вашей школы.
+      <!-- Статус расписания -->
+      ${totalTimetableLessons === 0 ? `
+        <div class="school-empty-banner" style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 16px; margin-bottom: 1rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap;">
+          <div>
+            <strong style="color: #1e40af;">🏫 Школьное расписание уроков не заполнено:</strong>
+            <p style="color: #3b82f6; font-size: 0.9rem; margin: 4px 0 0 0;">LifeOS не добавляет вымышленные уроки в рабочий план. Внесите ваши уроки вручную или загрузите шаблон 10 класса для ознакомления.</p>
           </div>
           <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-            <button class="btn btn-sm btn-primary" onclick="SchoolManager.confirmTimetable()">✓ Подтвердить расписание</button>
+            <button class="btn btn-sm btn-primary" onclick="SchoolManager.openAddLessonModal()">+ Добавить урок</button>
+            <button class="btn btn-sm btn-secondary" onclick="SchoolManager.openTemplateModal()">📋 Загрузить шаблон...</button>
+          </div>
+        </div>
+      ` : (!isConfirmed ? `
+        <div class="school-unconfirmed-banner" style="background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 12px 16px; margin-bottom: 1rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap;">
+          <div style="color: #92400e; font-size: 0.95rem;">
+            <strong>⚠️ Расписание требует проверки:</strong> уроки не будут добавлены в активный план дня, пока вы не подтвердите их соответствие вашей школе.
+          </div>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <button class="btn btn-sm btn-primary" onclick="SchoolManager.confirmTimetable()">✓ Проверить и подтвердить</button>
             <button class="btn btn-sm btn-secondary" onclick="SchoolManager.openTemplateModal()">🔄 Сменить шаблон...</button>
           </div>
         </div>
@@ -109,7 +178,7 @@ const SchoolManager = {
             <button class="btn btn-sm btn-secondary" onclick="SchoolManager.openTemplateModal()">🔄 Сменить шаблон...</button>
           </div>
         </div>
-      `}
+      `)}
 
       <div class="school-header-card">
         <div class="school-header-info">

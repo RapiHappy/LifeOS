@@ -21,7 +21,7 @@ const Database = {
 
   // Настройки по умолчанию
   defaultSettings: {
-    version: '1.1.1',
+    version: '1.2',
     sleepStart: '21:30',
     wakeTime: '06:00',
     gameMinutes: 60,
@@ -29,6 +29,7 @@ const Database = {
     familyMinutes: 40,
     offlineRestMinutes: 30,
     lunchMinutes: 40,
+    commuteMinutes: 25, // Настраиваемое время дороги до школы в минутах
     prayerCity: 'Актаныш, Республика Татарстан',
     prayerLat: 55.725,
     prayerLng: 54.080,
@@ -46,7 +47,7 @@ const Database = {
     aiEndpoint: '', // URL безопасного внешнего прокси
     isDemoMode: false,
     schoolTimetableConfirmed: false,
-    schoolTimetableOrigin: 'unconfirmed_template' // 'unconfirmed_template' | 'user_customized' | 'user_confirmed'
+    schoolTimetableOrigin: 'empty' // 'empty' | 'demo_template' | 'user_confirmed' | 'user_customized'
   },
 
   /**
@@ -175,7 +176,7 @@ const Database = {
   },
 
   // ==========================================
-  // НАСТРОЙКИ (LOCALSTORAGE) С МИГРАЦИЕЙ КЛЮЧЕЙ
+  // НАСТРОЙКИ (LOCALSTORAGE) БЕЗ ХРАНЕНИЯ СЕКРЕТОВ
   // ==========================================
   getSettings() {
     try {
@@ -184,20 +185,24 @@ const Database = {
       if (!raw) return { ...this.defaultSettings };
       const parsed = JSON.parse(raw);
 
-      // Безопасность: обнаружение и безопасная очистка устаревшего aiApiKey
+      // Безопасность: немедленное и полное удаление aiApiKey из активных настроек и LocalStorage
       if (parsed.aiApiKey) {
+        delete parsed.aiApiKey;
         try {
-          const backupObj = {
-            aiApiKey: parsed.aiApiKey,
-            cleanedAt: new Date().toISOString()
-          };
-          localStorage.setItem(BACKUP_KEY, JSON.stringify(backupObj));
-          delete parsed.aiApiKey;
           localStorage.setItem(SETTINGS_KEY, JSON.stringify(parsed));
-          console.info('LifeOS Security: устаревший API-ключ безопасно удалён из LocalStorage');
+          localStorage.removeItem(BACKUP_KEY);
+          if (typeof sessionStorage !== 'undefined') {
+            sessionStorage.setItem('lifeos_revocation_warning', 'true');
+          }
+          console.warn('LifeOS Security: обнаружен и полностью удалён устаревший API-ключ. Рекомендуем отозвать его у провайдера.');
         } catch (e) {
           delete parsed.aiApiKey;
         }
+      }
+
+      // Удаляем любые остаточные открытые копии ключей
+      if (typeof localStorage !== 'undefined' && localStorage.getItem(BACKUP_KEY)) {
+        localStorage.removeItem(BACKUP_KEY);
       }
 
       return { ...this.defaultSettings, ...parsed };
@@ -211,8 +216,10 @@ const Database = {
     const sanitized = { ...newSettings };
     if (sanitized.aiApiKey) delete sanitized.aiApiKey; // Никогда не хранить ключ в клиенте
     const merged = { ...this.getSettings(), ...sanitized };
+    if (merged.aiApiKey) delete merged.aiApiKey;
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(merged));
+      localStorage.removeItem(BACKUP_KEY);
     }
     return merged;
   },
@@ -303,12 +310,48 @@ const Database = {
   // Логи активности
   async logActivity(entry) {
     const today = _TimeUtilsDB ? _TimeUtilsDB.getTodayStr() : new Date().toISOString().split('T')[0];
+    
+    // Защита от дублей: если передан taskId или hwId, проверяем существующую запись
+    if (entry.taskId || entry.hwId) {
+      const all = await this.getAll('activity_log');
+      const existing = all.find(item => 
+        (entry.taskId && item.taskId === entry.taskId) ||
+        (entry.hwId && item.hwId === entry.hwId && item.date === (entry.date || today))
+      );
+      if (existing) {
+        // Обновляем существующую запись вместо создания повторной
+        const updated = {
+          ...existing,
+          ...entry,
+          timestamp: existing.timestamp || new Date().toISOString(),
+          date: entry.date || existing.date || today
+        };
+        await this.put('activity_log', updated);
+        return updated;
+      }
+    }
+
     const record = {
+      id: entry.id || ('act_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6)),
       ...entry,
       timestamp: entry.timestamp || new Date().toISOString(),
       date: entry.date || today
     };
     return await this.put('activity_log', record);
+  },
+
+  async removeActivityByTaskId(taskId, hwId = null) {
+    if (!taskId && !hwId) return;
+    const all = await this.getAll('activity_log');
+    const matches = all.filter(item => 
+      (taskId && item.taskId === taskId) || 
+      (hwId && item.hwId === hwId)
+    );
+    for (const m of matches) {
+      if (m.id !== undefined) {
+        await this.delete('activity_log', m.id);
+      }
+    }
   },
 
   async getActivityLogs(startDate, endDate) {
@@ -355,13 +398,15 @@ const Database = {
     // 1. Синхронизация каталога тем ЕГЭ без потери пользовательского прогресса
     await this.syncEgeTopicsCatalog();
 
-    // 2. Расписание школы: если пусто, создаём шаблон с пометкой "не подтверждено"
+    // 2. Расписание школы: при чистом старте создаём пустую сетку без вымышленных уроков
     const timetable = await this.getAll('school_timetable');
     if (timetable.length === 0) {
-      await this.seedRealisticSchoolTimetable();
+      for (let day = 1; day <= 7; day++) {
+        await this.saveDayTimetable(day, []);
+      }
       this.saveSettings({
         schoolTimetableConfirmed: false,
-        schoolTimetableOrigin: 'unconfirmed_template'
+        schoolTimetableOrigin: 'empty'
       });
     }
 
@@ -778,7 +823,17 @@ const Database = {
       isTemplate: false
     });
 
-    this.saveSettings({ isDemoMode: true });
+    this.saveSettings({ 
+      isDemoMode: true,
+      schoolTimetableConfirmed: true,
+      schoolTimetableOrigin: 'demo_template'
+    });
+    // Загрузка демо-расписания только если сетка пуста
+    const currentTt = await this.getAll('school_timetable');
+    const hasAnyLessons = currentTt.some(d => d.lessons && d.lessons.length > 0);
+    if (!hasAnyLessons) {
+      await this.seedRealisticSchoolTimetable();
+    }
     return true;
   },
 
@@ -786,10 +841,14 @@ const Database = {
   // ЭКСПОРТ И ИМПОРТ ДАННЫХ
   // ==========================================
   async exportAllData() {
+    const rawSettings = this.getSettings();
+    const safeSettings = { ...rawSettings };
+    delete safeSettings.aiApiKey; // Гарантированное отсутствие секретов в бэкапе
+
     const data = {
-      version: '1.1.1',
+      version: '1.2',
       exportedAt: new Date().toISOString(),
-      settings: this.getSettings(),
+      settings: safeSettings,
       schedule_days: await this.getAll('schedule_days'),
       homework: await this.getAll('homework'),
       school_timetable: await this.getAll('school_timetable'),
@@ -803,53 +862,122 @@ const Database = {
   },
 
   async importAllData(jsonString) {
-    const data = JSON.parse(jsonString);
-
-    if (data.settings) {
-      this.saveSettings(data.settings);
+    if (!jsonString || typeof jsonString !== 'string') {
+      throw new Error('Файл импорта пуст или повреждён.');
     }
 
-    if (Array.isArray(data.schedule_days)) {
-      await this.clearStore('schedule_days');
-      for (const item of data.schedule_days) await this.put('schedule_days', item);
+    let data;
+    try {
+      data = JSON.parse(jsonString);
+    } catch (e) {
+      throw new Error('Некорректный JSON-файл: ' + e.message);
     }
 
-    if (Array.isArray(data.homework)) {
-      await this.clearStore('homework');
-      for (const item of data.homework) await this.put('homework', item);
+    if (!data || typeof data !== 'object') {
+      throw new Error('Неверная структура данных: ожидался JSON-объект.');
     }
 
-    if (Array.isArray(data.school_timetable)) {
-      await this.clearStore('school_timetable');
-      for (const item of data.school_timetable) await this.put('school_timetable', item);
+    // Проверяем наличие ключевых полей структуры LifeOS
+    const hasRecognizedStructure = data.settings || Array.isArray(data.schedule_days) || Array.isArray(data.homework) || Array.isArray(data.school_timetable) || Array.isArray(data.ege_topics);
+    if (!hasRecognizedStructure) {
+      throw new Error('Несовместимый формат: файл не содержит структуры данных LifeOS.');
     }
 
-    if (Array.isArray(data.ege_topics)) {
-      await this.clearStore('ege_topics');
-      for (const item of data.ege_topics) await this.put('ege_topics', item);
-    }
+    // Создаём снимок текущих данных перед заменой для надёжного отката при ошибке
+    const preImportSnapshot = await this.exportAllData();
 
-    if (Array.isArray(data.olympiads)) {
-      await this.clearStore('olympiads');
-      for (const item of data.olympiads) await this.put('olympiads', item);
-    }
+    try {
+      // 1. Безопасные настройки (без API-ключей)
+      if (data.settings && typeof data.settings === 'object') {
+        const safeSettings = { ...data.settings };
+        if (safeSettings.aiApiKey) delete safeSettings.aiApiKey;
+        this.saveSettings(safeSettings);
+      }
 
-    if (Array.isArray(data.projects)) {
-      await this.clearStore('projects');
-      for (const item of data.projects) await this.put('projects', item);
-    }
+      // 2. Расписание дней
+      if (Array.isArray(data.schedule_days)) {
+        await this.clearStore('schedule_days');
+        for (const item of data.schedule_days) await this.put('schedule_days', item);
+      }
 
-    if (Array.isArray(data.replan_history)) {
-      await this.clearStore('replan_history');
-      for (const item of data.replan_history) await this.put('replan_history', item);
-    }
+      // 3. Домашние задания
+      if (Array.isArray(data.homework)) {
+        await this.clearStore('homework');
+        for (const item of data.homework) await this.put('homework', item);
+      }
 
-    if (Array.isArray(data.activity_log)) {
-      await this.clearStore('activity_log');
-      for (const item of data.activity_log) await this.put('activity_log', item);
-    }
+      // 4. Школьное расписание
+      if (Array.isArray(data.school_timetable)) {
+        await this.clearStore('school_timetable');
+        for (const item of data.school_timetable) await this.put('school_timetable', item);
+      }
 
-    return true;
+      // 5. Темы ЕГЭ
+      if (Array.isArray(data.ege_topics)) {
+        await this.clearStore('ege_topics');
+        for (const item of data.ege_topics) await this.put('ege_topics', item);
+      }
+
+      // 6. Олимпиады
+      if (Array.isArray(data.olympiads)) {
+        await this.clearStore('olympiads');
+        for (const item of data.olympiads) await this.put('olympiads', item);
+      }
+
+      // 7. Проекты
+      if (Array.isArray(data.projects)) {
+        await this.clearStore('projects');
+        for (const item of data.projects) await this.put('projects', item);
+      }
+
+      // 8. История перепланирования
+      if (Array.isArray(data.replan_history)) {
+        await this.clearStore('replan_history');
+        for (const item of data.replan_history) await this.put('replan_history', item);
+      }
+
+      // 9. Журнал активности
+      if (Array.isArray(data.activity_log)) {
+        await this.clearStore('activity_log');
+        for (const item of data.activity_log) await this.put('activity_log', item);
+      }
+
+      return { success: true };
+    } catch (err) {
+      console.error('Ошибка в процессе импорта, восстанавливаем исходное состояние:', err);
+      // Автоматический откат из снимка
+      try {
+        const rollback = JSON.parse(preImportSnapshot);
+        if (rollback.settings) this.saveSettings(rollback.settings);
+        if (Array.isArray(rollback.schedule_days)) {
+          await this.clearStore('schedule_days');
+          for (const item of rollback.schedule_days) await this.put('schedule_days', item);
+        }
+        if (Array.isArray(rollback.homework)) {
+          await this.clearStore('homework');
+          for (const item of rollback.homework) await this.put('homework', item);
+        }
+        if (Array.isArray(rollback.school_timetable)) {
+          await this.clearStore('school_timetable');
+          for (const item of rollback.school_timetable) await this.put('school_timetable', item);
+        }
+        if (Array.isArray(rollback.ege_topics)) {
+          await this.clearStore('ege_topics');
+          for (const item of rollback.ege_topics) await this.put('ege_topics', item);
+        }
+        if (Array.isArray(rollback.olympiads)) {
+          await this.clearStore('olympiads');
+          for (const item of rollback.olympiads) await this.put('olympiads', item);
+        }
+        if (Array.isArray(rollback.projects)) {
+          await this.clearStore('projects');
+          for (const item of rollback.projects) await this.put('projects', item);
+        }
+      } catch (rollbackErr) {
+        console.error('Критический сбой отката импорта:', rollbackErr);
+      }
+      throw new Error('Импорт прерван из-за ошибки. Прежнее состояние полностью восстановлено: ' + err.message);
+    }
   },
 
   async resetToDefaults() {

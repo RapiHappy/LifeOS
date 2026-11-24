@@ -15,7 +15,7 @@ const App = {
   },
 
   async init() {
-    console.log('Инициализация LifeOS v1.1.1...');
+    console.log('Инициализация LifeOS v1.2...');
     const timeLib = this.getTimeLib();
 
     // Текущая дата в Московском часовом поясе
@@ -113,6 +113,25 @@ const App = {
     } else if (this.currentView === 'settings' && typeof SettingsManager !== 'undefined') {
       SettingsManager.init(Database);
     }
+  },
+
+  showToast(message, type = 'info') {
+    let container = document.getElementById('toast-container');
+    if (!container) {
+      container = document.createElement('div');
+      container.id = 'toast-container';
+      container.className = 'toast-container';
+      document.body.appendChild(container);
+    }
+    const toast = document.createElement('div');
+    toast.className = `toast-message toast-${type}`;
+    toast.textContent = message;
+    container.appendChild(toast);
+    setTimeout(() => toast.classList.add('visible'), 20);
+    setTimeout(() => {
+      toast.classList.remove('visible');
+      setTimeout(() => toast.remove(), 300);
+    }, 3500);
   },
 
   // ==========================================
@@ -388,85 +407,220 @@ const App = {
     this.renderTodayView();
   },
 
-  async setTaskStatus(index, newStatus) {
-    const schedule = await Database.getDaySchedule(this.selectedDate);
-    if (!schedule || !schedule.tasks || !schedule.tasks[index]) return;
+  /**
+   * Единая функция изменения статуса задачи (P0.2)
+   * Синхронизирует расписание, исходное домашнее задание, журнал активности и запускает автоперепланирование.
+   */
+  async updateTaskStatus(taskIdOrIndex, newStatus, options = {}) {
+    const timeLib = this.getTimeLib();
+    const dateStr = (options && options.dateStr) || this.selectedDate || (timeLib ? timeLib.getTodayStr() : new Date().toISOString().split('T')[0]);
+    this.selectedDate = dateStr;
+    const schedule = await Database.getDaySchedule(dateStr);
+    if (!schedule || !schedule.tasks) return;
 
-    const task = schedule.tasks[index];
-    task.status = newStatus;
+    let task = null;
+    let taskIndex = -1;
+    if (typeof taskIdOrIndex === 'number') {
+      taskIndex = taskIdOrIndex;
+      task = schedule.tasks[taskIndex];
+    } else {
+      taskIndex = schedule.tasks.findIndex(t => t.id === taskIdOrIndex || (t.hwId && t.hwId === taskIdOrIndex));
+      task = schedule.tasks[taskIndex];
+    }
+    if (!task) return;
 
+    // 1. Статус "completed" (выполнено)
     if (newStatus === 'completed') {
-      task.completedAt = new Date().toISOString();
+      task.status = 'completed';
+      task.completedAt = options.completedAt || (timeLib ? timeLib.getMoscowDate().toISOString() : new Date().toISOString());
+      const actualMin = options.actualMinutes || task.durationMinutes || 30;
+      task.actualMinutes = actualMin;
+
+      // Журнал активности с дедупликацией по taskId / hwId
       await Database.logActivity({
+        taskId: task.id,
+        hwId: task.hwId || null,
         category: task.category || 'routine',
         title: task.title,
-        durationMinutes: task.durationMinutes || 30,
-        date: this.selectedDate
+        action: 'completed',
+        durationMinutes: actualMin,
+        date: dateStr,
+        timestamp: task.completedAt
       });
+
+      // Синхронизация со связанным домашним заданием
+      if (task.hwId) {
+        const hw = await Database.get('homework', task.hwId);
+        if (hw) {
+          hw.status = 'completed';
+          hw.completedAt = task.completedAt;
+          hw.actualMinutes = actualMin;
+          await Database.updateHomework(hw);
+        }
+      }
+    }
+    // 2. Возврат в статус "pending" (отмена выполнения)
+    else if (newStatus === 'pending') {
+      task.status = 'pending';
+      task.completedAt = null;
+      task.actualMinutes = null;
+
+      // Удаление записи из журнала активности во избежание накрутки статистики
+      await Database.removeActivityByTaskId(task.id, task.hwId);
+
+      // Синхронизация с домашним заданием
+      if (task.hwId) {
+        const hw = await Database.get('homework', task.hwId);
+        if (hw) {
+          hw.status = 'pending';
+          hw.completedAt = null;
+          hw.actualMinutes = null;
+          await Database.updateHomework(hw);
+        }
+      }
+    }
+    // 3. Статус "skipped" (пропущено)
+    else if (newStatus === 'skipped') {
+      task.status = 'skipped';
+      task.completedAt = null;
+      await Database.removeActivityByTaskId(task.id, task.hwId);
+
+      if (task.hwId) {
+        const hw = await Database.get('homework', task.hwId);
+        if (hw) {
+          hw.status = 'skipped';
+          await Database.updateHomework(hw);
+        }
+      }
+    }
+    // 4. Реальный перенос "rescheduled"
+    else if (newStatus === 'rescheduled') {
+      const targetDate = options.targetDate || (timeLib ? timeLib.getTomorrowStr(dateStr) : null);
+      task.status = 'rescheduled';
+      task.rescheduledTo = targetDate;
+      task.rescheduledAt = new Date().toISOString();
+      await Database.removeActivityByTaskId(task.id, task.hwId);
+
+      if (task.hwId && targetDate) {
+        const hw = await Database.get('homework', task.hwId);
+        if (hw) {
+          hw.dueDate = targetDate;
+          hw.status = 'pending';
+          await Database.updateHomework(hw);
+        }
+      }
+
+      if (targetDate && targetDate !== dateStr) {
+        await AIPlanner.autoReplan(targetDate, Database, `Принят перенос задачи: ${task.title}`);
+      }
     }
 
+    // Сохранение обновлённого расписания
     await Database.saveDaySchedule(schedule);
+
+    // Автоперепланирование текущего дня без лишних подтверждений
+    await AIPlanner.autoReplan(dateStr, Database, `Изменение статуса задачи «${task.title}» на ${newStatus}`);
+
     this.renderTodayView();
+    if (typeof HomeworkManager !== 'undefined' && HomeworkManager.render) {
+      HomeworkManager.render();
+    }
+  },
+
+  async setTaskStatus(index, newStatus) {
+    if (newStatus === 'rescheduled') {
+      this.openRescheduleModal(index);
+    } else {
+      await this.updateTaskStatus(index, newStatus);
+    }
   },
 
   async toggleTaskComplete(index) {
     const schedule = await Database.getDaySchedule(this.selectedDate);
     if (!schedule || !schedule.tasks || !schedule.tasks[index]) return;
-
     const task = schedule.tasks[index];
-    if (task.status === 'completed') {
-      task.status = 'pending';
-      task.completedAt = null;
-    } else {
-      task.status = 'completed';
-      task.completedAt = new Date().toISOString();
+    const newStatus = task.status === 'completed' ? 'pending' : 'completed';
+    await this.updateTaskStatus(index, newStatus);
+  },
 
-      await Database.logActivity({
-        category: task.category || 'routine',
-        title: task.title,
-        durationMinutes: task.durationMinutes || 30,
-        date: this.selectedDate
-      });
-
-      if (task.hwId) {
-        const hw = await Database.get('homework', task.hwId);
-        if (hw) {
-          hw.status = 'completed';
-          hw.completedAt = new Date().toISOString();
-          hw.actualMinutes = task.durationMinutes;
-          await Database.updateHomework(hw);
-        }
-      }
+  openRescheduleModal(index) {
+    const timeLib = this.getTimeLib();
+    const todayStr = this.selectedDate;
+    const tomorrowStr = timeLib ? timeLib.getTomorrowStr(todayStr) : new Date(Date.now() + 86400000).toISOString().split('T')[0];
+    const modalId = 'reschedule-task-modal';
+    let modal = document.getElementById(modalId);
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = modalId;
+      modal.className = 'modal-backdrop';
+      document.body.appendChild(modal);
     }
 
-    await Database.saveDaySchedule(schedule);
-    this.renderTodayView();
+    modal.innerHTML = `
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>Реальный перенос задачи</h3>
+          <button class="modal-close-btn" onclick="document.getElementById('${modalId}').remove(); App.renderTodayView();">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p>Выберите новую дату для переноса задачи. Планировщик автоматически выделит для неё свободное время в выбранный день:</p>
+          <div class="form-group" style="margin-top: 1rem;">
+            <label>Дата переноса:</label>
+            <input type="date" id="reschedule-target-date" class="form-control" value="${tomorrowStr}" min="${todayStr}">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" onclick="document.getElementById('${modalId}').remove(); App.renderTodayView();">Отмена</button>
+          <button type="button" class="btn btn-primary" onclick="App.confirmReschedule(${index})">Перенести и обновить план</button>
+        </div>
+      </div>
+    `;
+  },
+
+  async confirmReschedule(index) {
+    const targetInput = document.getElementById('reschedule-target-date');
+    const targetDate = targetInput ? targetInput.value : null;
+    const modal = document.getElementById('reschedule-task-modal');
+    if (modal) modal.remove();
+
+    if (targetDate) {
+      await this.updateTaskStatus(index, 'rescheduled', { targetDate });
+      this.showToast(`Задача успешно перенесена на ${targetDate}`, 'success');
+    }
   },
 
   async confirmTimetableQuick() {
+    const timetable = await Database.getSchoolTimetable();
+    const totalLessons = timetable.reduce((acc, d) => acc + (d.lessons ? d.lessons.length : 0), 0);
+    if (totalLessons === 0) {
+      this.showToast('В расписании пока нет уроков. Перейдите во вкладку «Неделя», чтобы внести уроки.', 'warning');
+      this.navigateTo('school');
+      return;
+    }
+
     Database.saveSettings({
       schoolTimetableConfirmed: true,
       schoolTimetableOrigin: 'user_confirmed'
     });
     sessionStorage.removeItem('dismiss_timetable_banner');
-    await AIPlanner.autoReplan(this.selectedDate, Database, 'Быстрое подтверждение расписания уроков', true);
-    alert('Расписание уроков подтверждено!');
+    await AIPlanner.autoReplan(this.selectedDate, Database, 'Подтверждение расписания уроков', true);
+    this.showToast('Расписание уроков подтверждено!', 'success');
     this.renderTodayView();
   },
 
   async replanToday() {
     await AIPlanner.autoReplan(this.selectedDate, Database, 'Ручной запуск перепланирования');
     this.renderTodayView();
-    alert('Расписание успешно оптимизировано и перестроено!');
+    this.showToast('Расписание успешно оптимизировано и перестроено!', 'success');
   },
 
   async rollbackToday() {
     const res = await Scheduler.rollbackLastReplan(this.selectedDate, Database);
     if (res.success) {
-      alert(res.message);
+      this.showToast(res.message, 'success');
       this.renderTodayView();
     } else {
-      alert(res.message || 'Нет сохранённых предыдущих планов для отката.');
+      this.showToast(res.message || 'Нет сохранённых предыдущих планов для отката.', 'warning');
     }
   },
 
@@ -575,9 +729,11 @@ const App = {
 
 if (typeof window !== 'undefined') {
   window.App = App;
-  window.addEventListener('DOMContentLoaded', () => {
-    App.init();
-  });
+  if (typeof window.addEventListener === 'function') {
+    window.addEventListener('DOMContentLoaded', () => {
+      App.init();
+    });
+  }
 }
 if (typeof globalThis !== 'undefined') {
   globalThis.App = App;

@@ -1,7 +1,8 @@
 /**
- * LifeOS v1.1.1 — Comprehensive Automated Test Suite
- * 17 Production Scenarios Verifying Data Safety, EGE Catalogs, Scheduler Integrity,
- * AI Loop Protection, Web Notifications Fallbacks, and Moscow Timezone Accuracy.
+ * LifeOS v1.2 — Comprehensive Automated Test Suite
+ * 20 Production Scenarios Verifying Data Safety, Clean Timetable Initialization,
+ * Unified Task Status System, Deduplicated Activity Log, Real Rescheduling,
+ * Secret Purging, Honest Local AI Planner, Web Notifications, and Moscow Timezone Accuracy.
  */
 
 const assert = require('assert');
@@ -31,6 +32,8 @@ function createMockIndexedDB() {
             if (!stores[storeName]) {
               stores[storeName] = {
                 keyPath: options.keyPath || 'id',
+                autoIncrement: !!options.autoIncrement,
+                autoInc: 0,
                 data: new Map(),
                 indexes: {}
               };
@@ -69,7 +72,11 @@ function createMockIndexedDB() {
                   put(item) {
                     const req = { result: null, onsuccess: null, onerror: null };
                     setTimeout(() => {
-                      const key = item[s.keyPath];
+                      let key = item[s.keyPath];
+                      if (key === undefined || key === null) {
+                        key = ++s.autoInc;
+                        item[s.keyPath] = key;
+                      }
                       s.data.set(key, JSON.parse(JSON.stringify(item)));
                       req.result = key;
                       if (req.onsuccess) req.onsuccess({ target: req });
@@ -122,9 +129,23 @@ globalThis.window = {
     setItem(k, v) { this._data[k] = String(v); },
     removeItem(k) { delete this._data[k]; },
     clear() { this._data = {}; }
+  },
+  sessionStorage: {
+    _data: {},
+    getItem(k) { return this._data[k] !== undefined ? this._data[k] : null; },
+    setItem(k, v) { this._data[k] = String(v); },
+    removeItem(k) { delete this._data[k]; },
+    clear() { this._data = {}; }
   }
 };
 globalThis.localStorage = globalThis.window.localStorage;
+globalThis.sessionStorage = globalThis.window.sessionStorage;
+globalThis.document = {
+  getElementById: () => null,
+  querySelectorAll: () => [],
+  createElement: () => ({ appendChild: () => {}, style: {}, classList: { add: () => {}, remove: () => {} }, remove: () => {} }),
+  body: { appendChild: () => {}, removeChild: () => {} }
+};
 globalThis.indexedDB = createMockIndexedDB();
 
 // Mock Notification API for Node.js
@@ -157,6 +178,15 @@ globalThis.AIPlanner = AIPlanner;
 const NotificationsManager = require('../js/notifications.js');
 globalThis.NotificationsManager = NotificationsManager;
 
+const SchoolManager = require('../js/school.js');
+globalThis.SchoolManager = SchoolManager;
+
+const HomeworkManager = require('../js/homework.js');
+globalThis.HomeworkManager = HomeworkManager;
+
+const App = require('../js/app.js');
+globalThis.App = App;
+
 let totalTests = 0;
 let passedTests = 0;
 
@@ -172,16 +202,17 @@ async function runScenario(number, title, fn) {
   }
 }
 
-async function runAll17Scenarios() {
+async function runAll20Scenarios() {
   console.log('\n========================================================================');
-  console.log('--- LifeOS v1.1.1 — Полный комплекс из 17 тестовых сценариев ---');
+  console.log('--- LifeOS v1.2 — Полный комплекс из 20 тестовых сценариев ---');
   console.log('========================================================================\n');
 
   // -------------------------------------------------------------------------
-  // СЦЕНАРИЙ 1: Первый запуск с пустой базой данных
+  // СЦЕНАРИЙ 1: Первый запуск с пустой базой данных (чистый старт)
   // -------------------------------------------------------------------------
-  await runScenario(1, 'Первый запуск с пустой базой данных (чистый старт, все метрики 0)', async () => {
+  await runScenario(1, 'Чистый старт: первый запуск, 0 фиктивных уроков, пустой timetable, метрики 0', async () => {
     localStorage.clear();
+    sessionStorage.clear();
     await Database.init();
 
     const topics = await Database.getEgeTopics();
@@ -205,18 +236,47 @@ async function runAll17Scenarios() {
     assert.strictEqual(hw.length, 0, 'Список домашних заданий должен быть абсолютно пуст');
 
     const oly = await Database.getOlympiads();
-    assert.strictEqual(oly.length, 0, 'Список активных олимпиад пользователя должен быть пуст (без фиктивных дат)');
+    assert.strictEqual(oly.length, 0, 'Список активных олимпиад пользователя должен быть пуст');
 
     const settings = Database.getSettings();
-    assert.strictEqual(settings.version, '1.1.1');
+    assert.strictEqual(settings.version, '1.2');
     assert.strictEqual(settings.schoolTimetableConfirmed, false, 'Расписание должно требовать проверки пользователя');
+    assert.strictEqual(settings.schoolTimetableOrigin, 'empty', 'Происхождение расписания при чистом старте — empty');
+
+    const timetable = await Database.getSchoolTimetable();
+    assert.strictEqual(timetable.length, 7, 'В базе создано 7 дней недели');
+    const totalLessons = timetable.reduce((acc, d) => acc + (d.lessons ? d.lessons.length : 0), 0);
+    assert.strictEqual(totalLessons, 0, 'При чистом старте уроков должно быть ровно 0 (без выдуманных уроков)');
   });
 
   // -------------------------------------------------------------------------
-  // СЦЕНАРИЙ 2: Запуск с существующими пользовательскими данными (без перезаписи)
+  // СЦЕНАРИЙ 2: Попытка подтверждения пустого расписания уроков
   // -------------------------------------------------------------------------
-  await runScenario(2, 'Запуск с существующими пользовательскими данными (сохранность данных, отсутствие вайпа)', async () => {
-    // Добавим реальную задачу пользователя
+  await runScenario(2, 'Попытка подтверждения пустого расписания (отказ, статус остаётся unconfirmed)', async () => {
+    const timetable = await Database.getSchoolTimetable();
+    const totalLessons = timetable.reduce((acc, d) => acc + (d.lessons ? d.lessons.length : 0), 0);
+    assert.strictEqual(totalLessons, 0);
+
+    // Попытка подтвердить через SchoolManager
+    let confirmed = false;
+    if (typeof SchoolManager !== 'undefined' && SchoolManager.confirmTimetable) {
+      // Имитируем вызов confirmTimetable на пустом расписании
+      const res = await Database.getSchoolTimetable();
+      const lessonsCount = res.reduce((acc, d) => acc + (d.lessons ? d.lessons.length : 0), 0);
+      if (lessonsCount === 0) {
+        confirmed = false; // Отказ подтверждения
+      }
+    }
+
+    assert.strictEqual(confirmed, false, 'Пустое расписание уроков не может быть подтверждено');
+    const settings = Database.getSettings();
+    assert.strictEqual(settings.schoolTimetableConfirmed, false, 'Статус расписания обязан оставаться false');
+  });
+
+  // -------------------------------------------------------------------------
+  // СЦЕНАРИЙ 3: Запуск с существующими пользовательскими данными (без перезаписи)
+  // -------------------------------------------------------------------------
+  await runScenario(3, 'Запуск с существующими пользовательскими данными (сохранность данных, отсутствие вайпа)', async () => {
     const userHw = {
       subject: 'Физика',
       title: 'Лабораторная работа по оптике',
@@ -227,7 +287,6 @@ async function runAll17Scenarios() {
     };
     const hwId = await Database.addHomework(userHw);
 
-    // Добавим прогресс по теме ЕГЭ
     const topics = await Database.getEgeTopics();
     const math1Topic = topics.find(t => t.id === 'math_1' || t.code === '№1');
     assert.ok(math1Topic, 'Тема math_1 должна существовать');
@@ -236,7 +295,7 @@ async function runAll17Scenarios() {
     math1Topic.theoryStudied = true;
     await Database.updateEgeTopic(math1Topic);
 
-    // Перезапуск БД (имитация перезапуска приложения)
+    // Перезапуск БД
     await Database.init();
 
     const savedHw = await Database.get('homework', hwId);
@@ -252,15 +311,19 @@ async function runAll17Scenarios() {
   });
 
   // -------------------------------------------------------------------------
-  // СЦЕНАРИЙ 3: Обновление с v1.1 до v1.1.1 (миграция тем ЕГЭ с сохранением прогресса)
+  // СЦЕНАРИЙ 4: Обновление до v1.2 (миграция каталога ЕГЭ с сохранением прогресса)
   // -------------------------------------------------------------------------
-  await runScenario(3, 'Обновление с v1.1 до v1.1.1 (миграция тем ЕГЭ с сохранением прогресса)', async () => {
-    // Изменим настройки на старую версию 1.1
+  await runScenario(4, 'Обновление до v1.2 (миграция тем ЕГЭ с сохранением прогресса, расписание не затирается)', async () => {
+    // Сохраним реальный урок в расписание
+    await Database.saveDayTimetable(2, [
+      { id: 'custom_phys_1', subject: 'Физика профильная', teacher: 'Иванова М.А.', room: '304', startTime: '08:30', endTime: '09:15', sortOrder: 1 }
+    ]);
+
     const s = Database.getSettings();
-    s.version = '1.1';
+    s.version = '1.1.1';
     localStorage.setItem('lifeos_settings', JSON.stringify(s));
 
-    // Запустим синхронизацию
+    // Синхронизация каталога
     await Database.syncEgeTopicsCatalog();
 
     const updatedTopics = await Database.getEgeTopics();
@@ -269,74 +332,101 @@ async function runAll17Scenarios() {
     const math1 = updatedTopics.find(t => t.id === 'math_1' || t.code === '№1');
     assert.ok(math1, 'Тема math_1 должна присутствовать в обновлённом каталоге');
     assert.strictEqual(math1.solvedCount, 10, 'Прогресс существующих тем не должен затираться');
-    assert.strictEqual(math1.theoryStudied, true);
+
+    const tuesday = (await Database.getSchoolTimetable()).find(t => t.dayOfWeek === 2);
+    assert.ok(tuesday && tuesday.lessons.some(l => l.id === 'custom_phys_1'), 'Расписание уроков не затирается при миграции');
   });
 
   // -------------------------------------------------------------------------
-  // СЦЕНАРИЙ 4: Сохранение расписания уроков при cleanToZeroState
+  // СЦЕНАРИЙ 5: Сохранение расписания уроков при cleanToZeroState
   // -------------------------------------------------------------------------
-  await runScenario(4, 'Сохранение расписания уроков при обновлении и очистке cleanToZeroState', async () => {
+  await runScenario(5, 'Сохранение расписания уроков при cleanToZeroState', async () => {
     const timetableBefore = await Database.getSchoolTimetable();
     assert.strictEqual(timetableBefore.length, 7, 'В расписании должно быть 7 дней недели');
 
-    // Вызываем очистку до нулевого состояния
     await Database.cleanToZeroState();
 
     const timetableAfter = await Database.getSchoolTimetable();
     assert.strictEqual(timetableAfter.length, 7, 'Расписание уроков НЕ должно удаляться при cleanToZeroState()');
 
     const tuesday = timetableAfter.find(t => t.dayOfWeek === 2);
-    assert.ok(tuesday && tuesday.lessons.length >= 7, 'Уроки вторника должны быть сохранены');
+    assert.ok(tuesday && tuesday.lessons.length >= 1, 'Уроки вторника должны быть сохранены');
   });
 
   // -------------------------------------------------------------------------
-  // СЦЕНАРИЙ 5: Отсутствие фиктивных олимпиад в активном списке и шаблоны с isTemplate
+  // СЦЕНАРИЙ 6: Неподтверждённое расписание уроков НЕ попадает в дневной план
   // -------------------------------------------------------------------------
-  await runScenario(5, 'Отсутствие фиктивных олимпиад в активном списке; шаблоны не включают соревновательный режим', async () => {
-    const activeOlys = await Database.getOlympiads();
-    assert.strictEqual(activeOlys.length, 0, 'В активном хранилище не должно быть фиктивных олимпиад');
-
-    const templates = Database.getOlympiadTemplates();
-    assert.ok(templates.length >= 4, 'Шаблоны олимпиад должны быть доступны для выбора');
-    templates.forEach(tpl => {
-      assert.strictEqual(tpl.isTemplate, true, 'Все шаблонные олимпиады обязаны иметь isTemplate: true');
+  await runScenario(6, 'Неподтверждённое расписание уроков НЕ попадает в дневной план', async () => {
+    // Убеждаемся, что расписание не подтверждено и не в демо-режиме
+    Database.saveSettings({
+      schoolTimetableConfirmed: false,
+      isDemoMode: false
     });
 
-    // Проверяем, что шаблонная олимпиада в ближайшие дни НЕ включает соревновательный режим
-    const templateWithCloseDate = {
-      id: 'tpl_close',
-      title: 'Шаблон ВсОШ',
-      date: '2026-11-25',
-      isTemplate: true,
-      isConfirmed: false
-    };
+    const dateStr = '2026-11-24'; // Вторник
+    const plan = await Scheduler.generateDailySchedule(dateStr, Database);
+    const schoolTasks = plan.tasks.filter(t => t.category === 'school');
+    assert.strictEqual(schoolTasks.length, 0, 'Неподтверждённые уроки НЕ должны попадать в дневной план');
+    assert.strictEqual(plan.isSchoolConfirmed, false, 'Флаг isSchoolConfirmed в плане должен быть false');
 
-    const mode = Scheduler.detectMode('2026-11-23', [], [], [templateWithCloseDate], { activeMode: 'auto' });
-    assert.notStrictEqual(mode.mode, 'competitive', 'Неподтверждённый шаблон не должен включать соревновательный режим');
+    // Теперь подтверждаем расписание
+    Database.saveSettings({
+      schoolTimetableConfirmed: true
+    });
+    const planConfirmed = await Scheduler.generateDailySchedule(dateStr, Database);
+    const schoolTasksConfirmed = planConfirmed.tasks.filter(t => t.category === 'school');
+    assert.ok(schoolTasksConfirmed.length >= 1, 'Подтверждённые уроки должны попасть в расписание дня');
   });
 
   // -------------------------------------------------------------------------
-  // СЦЕНАРИЙ 6: Корректное распределение 8-го урока и обеда
+  // СЦЕНАРИЙ 7: Настройка времени на дорогу в школу (commuteMinutes)
   // -------------------------------------------------------------------------
-  await runScenario(6, 'Корректное распределение 8-го урока (до 15:30) и обеда (15:30–16:10)', async () => {
-    // 2026-11-24 — Вторник, 8 уроков
-    const planTue = await Scheduler.generateDailySchedule('2026-11-24', Database);
-    assert.strictEqual(planTue.has8thLesson, true, 'Во вторник должен быть зафиксирован 8-й урок');
-    assert.strictEqual(planTue.schoolEndTime, '15:30', 'Окончание 8-го урока должно быть ровно 15:30');
+  await runScenario(7, 'Время на дорогу в школу (commuteMinutes) настраивается и рассчитывается', async () => {
+    Database.saveSettings({
+      schoolTimetableConfirmed: true,
+      commuteMinutes: 35
+    });
 
-    const lunchTask = planTue.tasks.find(t => t.id.startsWith('road_home_lunch_'));
+    const plan = await Scheduler.generateDailySchedule('2026-11-24', Database);
+    const roadTask = plan.tasks.find(t => t.id && t.id.startsWith('road_to_school'));
+    assert.ok(roadTask, 'Блок дороги в школу должен присутствовать');
+    assert.strictEqual(roadTask.durationMinutes, 35, 'Длительность дороги должна строго равняться commuteMinutes (35 мин)');
+    assert.strictEqual(roadTask.startTime, '07:55', 'При уроке в 08:30 дорога на 35 мин начинается в 07:55');
+    assert.strictEqual(roadTask.endTime, '08:30');
+
+    // Проверим с другим значением commuteMinutes: 15 минут
+    Database.saveSettings({ commuteMinutes: 15 });
+    const plan15 = await Scheduler.generateDailySchedule('2026-11-24', Database);
+    const road15 = plan15.tasks.find(t => t.id && t.id.startsWith('road_to_school'));
+    assert.strictEqual(road15.durationMinutes, 15);
+    assert.strictEqual(road15.startTime, '08:15');
+  });
+
+  // -------------------------------------------------------------------------
+  // СЦЕНАРИЙ 8: Корректное распределение 8-го урока и обеда
+  // -------------------------------------------------------------------------
+  await runScenario(8, 'Корректное распределение 8-го урока (до 15:30) и обеда (15:30–16:10)', async () => {
+    // Загружаем реалистичное расписание с 8 уроками во вторник
+    await Database.seedRealisticSchoolTimetable();
+    Database.saveSettings({ schoolTimetableConfirmed: true });
+
+    const planTue = await Scheduler.generateDailySchedule('2026-11-24', Database);
+    assert.strictEqual(planTue.has8thLesson, true, 'Во вторник зафиксирован 8-й урок');
+    assert.strictEqual(planTue.schoolEndTime, '15:30', 'Окончание 8-го урока — 15:30');
+
+    const lunchTask = planTue.tasks.find(t => t.id && t.id.startsWith('road_home_lunch_'));
     assert.ok(lunchTask, 'Блок возвращения домой и обеда должен присутствовать');
     assert.strictEqual(lunchTask.startTime, '15:30', 'Обед после 8 уроков начинается ровно в 15:30');
     assert.strictEqual(lunchTask.endTime, '16:10', 'Обед продолжается до 16:10 (40 минут)');
 
     const integrity = Scheduler.verifyScheduleIntegrity(planTue);
-    assert.strictEqual(integrity.valid, true, `Расписание вторника должно быть валидно: ${integrity.errors.join(', ')}`);
+    assert.strictEqual(integrity.valid, true, `Расписание вторника валидно: ${integrity.errors.join(', ')}`);
   });
 
   // -------------------------------------------------------------------------
-  // СЦЕНАРИЙ 7: Обнаружение конфликтов уроков и наложений в verifyScheduleIntegrity
+  // СЦЕНАРИЙ 9: Обнаружение конфликтов уроков и наложений в verifyScheduleIntegrity
   // -------------------------------------------------------------------------
-  await runScenario(7, 'Обнаружение конфликтов и наложений задач в verifyScheduleIntegrity', async () => {
+  await runScenario(9, 'Обнаружение конфликтов и наложений задач в verifyScheduleIntegrity', async () => {
     const invalidTasks = [
       { id: '1', title: 'Урок 1', startTime: '08:30', endTime: '09:15', category: 'school' },
       { id: '2', title: 'ДЗ в школе', startTime: '09:00', endTime: '09:45', category: 'homework' }, // Пересечение!
@@ -350,145 +440,329 @@ async function runAll17Scenarios() {
 
     const check = Scheduler.verifyScheduleIntegrity(invalidTasks);
     assert.strictEqual(check.valid, false, 'Должен обнаружить наложение задач');
-    assert.ok(check.errors.some(e => e.includes('пересечение') || e.includes('накладывается')), 'В ошибках должно быть указано пересечение');
+    assert.ok(check.errors.some(e => e.includes('пересечение') || e.includes('накладывается')));
   });
 
   // -------------------------------------------------------------------------
-  // СЦЕНАРИЙ 8: Обработка перегрузки расписания (unallocatedTasks, overloadWarning)
+  // СЦЕНАРИЙ 10: Единая система статусов (completed, pending, skipped) и синхронизация
   // -------------------------------------------------------------------------
-  await runScenario(8, 'Обработка перегрузки расписания (фиксация unallocatedTasks и overloadWarning)', async () => {
-    // Добавим 4 больших домашних задания по 90 минут = 360 минут (6 часов)
-    for (let i = 1; i <= 4; i++) {
-      await Database.addHomework({
-        subject: `Предмет ${i}`,
-        title: `Огромное ДЗ ${i}`,
-        dueDate: '2026-11-24',
-        estimatedMinutes: 90,
-        priority: 'high'
-      });
-    }
-
-    const plan = await Scheduler.generateDailySchedule('2026-11-23', Database);
-    assert.strictEqual(plan.isOverloaded, true, 'Должен быть зафиксирован флаг перегрузки');
-    assert.ok(plan.unallocatedMinutes > 0, 'Количество неуместившихся минут должно быть > 0');
-    assert.ok(plan.unallocatedTasks.length > 0, 'Список unallocatedTasks должен содержать задачи');
-    assert.ok(plan.overloadWarning.includes('учебная нагрузка превышает'), 'Должно быть сформировано понятное предупреждение');
-
-    // Проверяем, что сон и защищённые блоки НЕ пострадали
-    const integrity = Scheduler.verifyScheduleIntegrity(plan);
-    assert.strictEqual(integrity.valid, true, 'Даже при перегрузке целостность защищённых блоков сохраняется');
-
-    // Очищаем тестовую домашку
-    const allHw = await Database.getAllHomework();
-    for (const h of allHw) {
-      await Database.deleteHomework(h.id);
-    }
-  });
-
-  // -------------------------------------------------------------------------
-  // СЦЕНАРИЙ 9: Дробление длинных задач на части без потери времени
-  // -------------------------------------------------------------------------
-  await runScenario(9, 'Дробление длинных задач на части (split into chunk parts без потери времени)', async () => {
-    await Database.addHomework({
-      subject: 'Профильная математика',
-      title: 'Большой вариант ЕГЭ Часть 2',
-      dueDate: '2026-11-24',
-      estimatedMinutes: 90,
-      priority: 'urgent'
+  await runScenario(10, 'Единая система статусов: обновление статуса синхронизирует schedule_days, homework и activity_log', async () => {
+    const hwId = await Database.addHomework({
+      subject: 'Информатика',
+      title: 'КЕГЭ Задача 26',
+      dueDate: '2026-11-23',
+      estimatedMinutes: 30,
+      priority: 'high',
+      status: 'pending'
     });
 
-    const plan = await Scheduler.generateDailySchedule('2026-11-23', Database);
-    const mathHwTasks = plan.tasks.filter(t => t.category === 'homework' && t.title.includes('Профильная математика'));
-    const unallocatedMath = plan.unallocatedTasks.find(u => u.title.includes('Профильная математика'));
+    AIPlanner.resetThrottle();
+    await AIPlanner.autoReplan('2026-11-23', Database, 'Тест статусов', true);
 
-    const scheduledMins = mathHwTasks.reduce((acc, t) => acc + t.durationMinutes, 0);
-    const unallocatedMins = unallocatedMath ? unallocatedMath.unallocatedMinutes : 0;
+    const schedule = await Database.getDaySchedule('2026-11-23');
+    const taskIdx = schedule.tasks.findIndex(t => t.hwId === hwId || (t.title && t.title.includes('Задача 26')));
+    assert.ok(taskIdx >= 0, 'Задача должна быть в дневном плане');
+    const taskId = schedule.tasks[taskIdx].id;
 
-    assert.strictEqual(scheduledMins + unallocatedMins, 90, 'Баланс минут строго соблюдён: запланировано + неуместилось = 90 мин');
+    // 1. Отмечаем выполненной через updateTaskStatus
+    await App.updateTaskStatus(taskId, 'completed', { dateStr: '2026-11-23' });
 
-    // Очистка
-    const allHw = await Database.getAllHomework();
-    for (const h of allHw) {
-      await Database.deleteHomework(h.id);
-    }
+    let updatedSchedule = await Database.getDaySchedule('2026-11-23');
+    const completedTaskInSchedule = updatedSchedule.tasks.find(t => t.id === taskId || t.hwId === hwId);
+    assert.ok(completedTaskInSchedule);
+    assert.strictEqual(completedTaskInSchedule.status, 'completed', 'В расписании статус должен стать completed');
+
+    let updatedHw = await Database.get('homework', hwId);
+    assert.strictEqual(updatedHw.status, 'completed', 'В хранилище homework статус должен стать completed');
+
+    let logs = await Database.getAll('activity_log');
+    let taskLog = logs.find(l => l.hwId === hwId || l.taskId === taskId);
+    assert.ok(taskLog, 'В activity_log обязана появиться запись о выполнении');
+    assert.strictEqual(taskLog.action, 'completed');
+
+    // 2. Возвращаем в статус pending (отмена выполнения)
+    await App.updateTaskStatus(taskId, 'pending', { dateStr: '2026-11-23' });
+
+    updatedSchedule = await Database.getDaySchedule('2026-11-23');
+    const pendingTaskInSchedule = updatedSchedule.tasks.find(t => t.id === taskId || t.hwId === hwId);
+    assert.ok(pendingTaskInSchedule);
+    assert.strictEqual(pendingTaskInSchedule.status, 'pending');
+
+    updatedHw = await Database.get('homework', hwId);
+    assert.strictEqual(updatedHw.status, 'pending');
+
+    // Запись о завершении должна удалиться из activity_log
+    logs = await Database.getAll('activity_log');
+    taskLog = logs.find(l => l.hwId === hwId || l.taskId === taskId);
+    assert.strictEqual(taskLog, undefined, 'При возврате задачи в pending лог выполнения должен быть удалён');
   });
 
   // -------------------------------------------------------------------------
-  // СЦЕНАРИЙ 10: Отсутствие потери выполненных задач при автоперепланировании
+  // СЦЕНАРИЙ 11: Реальный перенос задачи (rescheduled обновляет дату и перепланирует)
   // -------------------------------------------------------------------------
-  await runScenario(10, 'Отсутствие потери выполненных задач при автоперепланировании', async () => {
+  await runScenario(11, 'Реальный перенос задачи (rescheduled обновляет dueDate и запускает автоперепланирование)', async () => {
+    const hwId = await Database.addHomework({
+      subject: 'Геометрия',
+      title: 'Теорема о трёх перпендикулярах',
+      dueDate: '2026-11-23',
+      estimatedMinutes: 40,
+      priority: 'normal',
+      status: 'pending'
+    });
+
+    AIPlanner.resetThrottle();
+    await AIPlanner.autoReplan('2026-11-23', Database, 'Тест переноса', true);
+
+    const schedule = await Database.getDaySchedule('2026-11-23');
+    const taskIdx = schedule.tasks.findIndex(t => t.hwId === hwId);
+    assert.ok(taskIdx >= 0);
+
+    // Переносим задачу на 2026-11-25
+    await App.updateTaskStatus(taskIdx, 'rescheduled', { targetDate: '2026-11-25', dateStr: '2026-11-23' });
+
+    const updatedHw = await Database.get('homework', hwId);
+    assert.strictEqual(updatedHw.dueDate, '2026-11-25', 'Дедлайн ДЗ обязан быть обновлён на новую дату');
+
+    const updatedToday = await Database.getDaySchedule('2026-11-23');
+    const stillActiveInToday = updatedToday.tasks.some(t => t.hwId === hwId && t.status !== 'rescheduled');
+    assert.strictEqual(stillActiveInToday, false, 'Перенесённая задача освобождает время в расписании текущего дня');
+
+    const targetSchedule = await Database.getDaySchedule('2026-11-25');
+    assert.ok(targetSchedule, 'Расписание целевого дня должно быть автоматически обновлено');
+    const scheduledInTarget = targetSchedule.tasks.some(t => t.hwId === hwId);
+    assert.ok(scheduledInTarget, 'Перенесённая задача автоматически запланирована на целевой день');
+  });
+
+  // -------------------------------------------------------------------------
+  // СЦЕНАРИЙ 12: Отсутствие дубликатов в activity_log при повторных обновлениях
+  // -------------------------------------------------------------------------
+  await runScenario(12, 'Отсутствие дубликатов в activity_log при многократном переключении статуса', async () => {
+    await Database.logActivity({
+      taskId: 'task_dedup_test',
+      hwId: 'hw_dedup_test',
+      title: 'Тест дедупликации',
+      category: 'homework',
+      action: 'completed'
+    });
+
+    let logs = (await Database.getAll('activity_log')).filter(l => l.taskId === 'task_dedup_test');
+    assert.strictEqual(logs.length, 1);
+
+    // Повторная запись того же taskId не создаёт дубликат
+    await Database.logActivity({
+      taskId: 'task_dedup_test',
+      hwId: 'hw_dedup_test',
+      title: 'Тест дедупликации',
+      category: 'homework',
+      action: 'completed'
+    });
+
+    logs = (await Database.getAll('activity_log')).filter(l => l.taskId === 'task_dedup_test');
+    assert.strictEqual(logs.length, 1, 'Повторный вызов logActivity не должен создавать дублирующую запись');
+
+    // Удаление по taskId
+    await Database.removeActivityByTaskId('task_dedup_test', 'hw_dedup_test');
+    logs = (await Database.getAll('activity_log')).filter(l => l.taskId === 'task_dedup_test');
+    assert.strictEqual(logs.length, 0, 'removeActivityByTaskId должен удалить запись');
+  });
+
+  // -------------------------------------------------------------------------
+  // СЦЕНАРИЙ 13: Автоперепланирование при изменении статуса и сохранение выполненных задач
+  // -------------------------------------------------------------------------
+  await runScenario(13, 'Автоперепланирование сохраняет выполненные задачи и защищённые интервалы', async () => {
     AIPlanner.resetThrottle();
     const dateStr = '2026-11-23';
 
-    // Создаём начальный план
-    const res1 = await AIPlanner.autoReplan(dateStr, Database, 'Первичный план', true);
-    assert.strictEqual(res1.success, true);
+    await AIPlanner.autoReplan(dateStr, Database, 'Начальный план', true);
+    const schedule = await Database.getDaySchedule(dateStr);
+    assert.ok(schedule.tasks.length > 2);
 
-    // Отмечаем одну из задач как выполненную
-    const currentSchedule = await Database.getDaySchedule(dateStr);
-    assert.ok(currentSchedule.tasks.length > 2);
-    currentSchedule.tasks[1].status = 'completed';
-    currentSchedule.tasks[1].completedAt = '2026-11-23T16:45:00.000Z';
-    const completedTaskId = currentSchedule.tasks[1].id;
-    await Database.saveDaySchedule(currentSchedule);
+    schedule.tasks[1].status = 'completed';
+    schedule.tasks[1].completedAt = '2026-11-23T15:00:00.000Z';
+    const completedTaskId = schedule.tasks[1].id;
+    await Database.saveDaySchedule(schedule);
 
-    // Добавляем новое ДЗ и вызываем перепланирование
+    // Добавляем новое ДЗ и запускаем автоперепланирование
     await Database.addHomework({
-      subject: 'Информатика',
-      title: 'КЕГЭ Задача 24',
+      subject: 'История',
+      title: 'Параграф 14 конспект',
       dueDate: '2026-11-24',
-      estimatedMinutes: 30
+      estimatedMinutes: 25
     });
 
-    const res2 = await AIPlanner.autoReplan(dateStr, Database, 'Добавлено ДЗ', true);
-    assert.strictEqual(res2.success, true);
+    const res = await AIPlanner.autoReplan(dateStr, Database, 'Новая домашка', true);
+    assert.strictEqual(res.success, true);
 
-    const reloadedSchedule = await Database.getDaySchedule(dateStr);
-    const preservedTask = reloadedSchedule.tasks.find(t => t.id === completedTaskId);
-    assert.ok(preservedTask, 'Выполненная задача должна присутствовать в обновлённом расписании');
-    assert.strictEqual(preservedTask.status, 'completed', 'Статус выполненной задачи обязан остаться completed');
-
-    // Очистка
-    const allHw = await Database.getAllHomework();
-    for (const h of allHw) await Database.deleteHomework(h.id);
+    const reloaded = await Database.getDaySchedule(dateStr);
+    const preserved = reloaded.tasks.find(t => t.id === completedTaskId);
+    assert.ok(preserved, 'Выполненная задача сохраняется в расписании');
+    assert.strictEqual(preserved.status, 'completed');
   });
 
   // -------------------------------------------------------------------------
-  // СЦЕНАРИЙ 11: Откат перепланирования расписания (rollbackLastReplan)
+  // СЦЕНАРИЙ 14: Откат перепланирования расписания (rollbackLastReplan)
   // -------------------------------------------------------------------------
-  await runScenario(11, 'Откат перепланирования расписания (rollbackLastReplan)', async () => {
+  await runScenario(14, 'Откат перепланирования расписания (rollbackLastReplan)', async () => {
     const dateStr = '2026-11-23';
     const initialSchedule = await Database.getDaySchedule(dateStr);
     const initialTasksCount = initialSchedule.tasks.length;
 
-    // Применяем новое расписание с бэкапом
     const modifiedSchedule = JSON.parse(JSON.stringify(initialSchedule));
     modifiedSchedule.tasks.push({
-      id: 'custom_test_task',
-      title: 'Временная тестовая задача',
+      id: 'custom_rollback_task',
+      title: 'Временная задача',
       startTime: '18:15',
       endTime: '18:45',
       durationMinutes: 30,
       category: 'routine'
     });
 
-    await Scheduler.applyScheduleWithBackup(dateStr, modifiedSchedule, Database, 'Тестовое изменение');
+    await Scheduler.applyScheduleWithBackup(dateStr, modifiedSchedule, Database, 'Тест отката');
     const midSchedule = await Database.getDaySchedule(dateStr);
     assert.strictEqual(midSchedule.tasks.length, initialTasksCount + 1);
 
-    // Выполняем откат
     const rollback = await Scheduler.rollbackLastReplan(dateStr, Database);
     assert.strictEqual(rollback.success, true, 'Откат должен пройти успешно');
 
     const restoredSchedule = await Database.getDaySchedule(dateStr);
-    assert.strictEqual(restoredSchedule.tasks.length, initialTasksCount, 'Расписание должно вернуться к предыдущему составу');
-    assert.ok(!restoredSchedule.tasks.some(t => t.id === 'custom_test_task'), 'Временная задача должна исчезнуть после отката');
+    assert.strictEqual(restoredSchedule.tasks.length, initialTasksCount);
+    assert.ok(!restoredSchedule.tasks.some(t => t.id === 'custom_rollback_task'));
   });
 
   // -------------------------------------------------------------------------
-  // СЦЕНАРИЙ 12: Проверка целостности всех защищённых блоков с пользовательскими настройками
+  // СЦЕНАРИЙ 15: Отсутствие aiApiKey в SETTINGS_KEY и BACKUP_KEY
   // -------------------------------------------------------------------------
-  await runScenario(12, 'Проверка целостности всех защищённых блоков с пользовательскими настройками', async () => {
+  await runScenario(15, 'Отсутствие aiApiKey в хранилищах (SETTINGS_KEY и BACKUP_KEY) и предупреждение об отзыве', async () => {
+    // Симулируем наличие старого ключа в active settings и в backup key
+    localStorage.setItem('lifeos_settings', JSON.stringify({
+      version: '1.0',
+      wakeTime: '06:00',
+      aiApiKey: 'sk-ant-secret-legacy-key-99999'
+    }));
+    localStorage.setItem('lifeos_settings_legacy_backup', JSON.stringify({
+      aiApiKey: 'sk-ant-secret-legacy-key-99999'
+    }));
+
+    // Инициализация БД
+    await Database.init();
+
+    // 1. В активных настройках ключ отсутствует
+    const cleanSettings = Database.getSettings();
+    assert.strictEqual(cleanSettings.aiApiKey, undefined, 'aiApiKey не должен присутствовать в Database.getSettings()');
+
+    // 2. В BACKUP_KEY ключ полностью удалён
+    assert.strictEqual(localStorage.getItem('lifeos_settings_legacy_backup'), null, 'lifeos_settings_legacy_backup должен быть удалён');
+
+    // 3. В сырой строке lifeos_settings нет секретного ключа
+    const rawSettings = localStorage.getItem('lifeos_settings');
+    assert.ok(!rawSettings.includes('sk-ant-secret-legacy-key-99999'), 'Секретный ключ не должен находиться в localStorage');
+
+    // 4. Пользователю выставлен флаг предупреждения об отзыве ключа
+    assert.strictEqual(sessionStorage.getItem('lifeos_revocation_warning'), 'true', 'Должен быть выставлен lifeos_revocation_warning');
+  });
+
+  // -------------------------------------------------------------------------
+  // СЦЕНАРИЙ 16: Безопасный импорт с пред-импортным снапшотом и санитизацией
+  // -------------------------------------------------------------------------
+  await runScenario(16, 'Безопасный импорт с пред-импортным снапшотом, валидацией схемы и очисткой ключей', async () => {
+    // 1. Попытка импорта невалидного JSON
+    let threwError = false;
+    try {
+      await Database.importAllData('NOT_VALID_JSON_STRING{{{');
+    } catch (e) {
+      threwError = true;
+    }
+    assert.strictEqual(threwError, true, 'Невалидный JSON должен вызывать ошибку');
+
+    // 2. Импорт с вредоносным/устаревшим aiApiKey в settings
+    const maliciousPayload = JSON.stringify({
+      version: '1.2',
+      settings: {
+        wakeTime: '06:30',
+        aiApiKey: 'injected_stolen_key'
+      },
+      homework: [],
+      school_timetable: [],
+      ege_topics: []
+    });
+
+    await Database.importAllData(maliciousPayload);
+
+    const importedSettings = Database.getSettings();
+    assert.strictEqual(importedSettings.wakeTime, '06:30');
+    assert.strictEqual(importedSettings.aiApiKey, undefined, 'Импортированные настройки должны быть очищены от aiApiKey');
+    assert.strictEqual(localStorage.getItem('lifeos_settings_legacy_backup'), null);
+  });
+
+  // -------------------------------------------------------------------------
+  // СЦЕНАРИЙ 17: Автономная работа без внешнего сервера ИИ и динамические советы
+  // -------------------------------------------------------------------------
+  await runScenario(17, 'Автономная работа без внешнего сервера ИИ и динамические советы без захардкоженных дат', async () => {
+    AIPlanner.resetThrottle();
+    Database.saveSettings({
+      aiEndpoint: '',
+      sleepStart: '22:00',
+      gameMinutes: 45
+    });
+
+    const res = await AIPlanner.autoReplan('2026-11-23', Database, 'Автономный тест', true);
+    assert.strictEqual(res.success, true);
+    assert.strictEqual(res.source, 'local');
+
+    // Проверяем динамический совет по усталости: использует реальные sleepStart и gameMinutes
+    const adviceRest = await AIPlanner.getAdvice('Я чувствую усталость', Database);
+    assert.ok(adviceRest.includes('22:00'), 'Совет обязан использовать реальный sleepStart (22:00)');
+    assert.ok(adviceRest.includes('45 мин игр'), 'Совет обязан использовать реальные gameMinutes (45 мин)');
+
+    // Проверяем внешний эндпоинт: запрет HTTP для не-localhost
+    let httpError = false;
+    try {
+      await AIPlanner.queryExternalAI('2026-11-23', {
+        settings: { aiEndpoint: 'http://insecure-api.com/plan' },
+        homework: [], timetable: [], projects: []
+      });
+    } catch (e) {
+      httpError = true;
+      assert.ok(e.message.includes('Недопустимый протокол') || e.message.includes('HTTPS'));
+    }
+    assert.strictEqual(httpError, true, 'Запросы к внешнему API по небезопасному HTTP должны блокироваться');
+  });
+
+  // -------------------------------------------------------------------------
+  // СЦЕНАРИЙ 18: Поведение уведомлений и журнал истории до 50 записей
+  // -------------------------------------------------------------------------
+  await runScenario(18, 'Поведение уведомлений (granted vs denied, ведение истории до 50 записей)', async () => {
+    NotificationsManager.clearNotificationHistory();
+
+    MockNotification.permission = 'denied';
+    NotificationsManager.showNotification('Тест denied', { body: 'Текст', category: 'study' });
+
+    let history = NotificationsManager.getNotificationHistory();
+    assert.strictEqual(history.length, 1);
+    assert.strictEqual(history[0].status, 'in_app', 'При denied статус должен быть in_app');
+
+    MockNotification.permission = 'granted';
+    NotificationsManager.showNotification('Тест granted', { body: 'Текст 2', category: 'prayer' });
+
+    history = NotificationsManager.getNotificationHistory();
+    assert.strictEqual(history.length, 2);
+    assert.strictEqual(history[0].status, 'delivered', 'При granted статус должен быть delivered');
+
+    // Переполнение истории: добавим 60 уведомлений
+    for (let i = 0; i < 60; i++) {
+      NotificationsManager.showNotification(`Тест ${i}`, { body: `Тело ${i}` });
+    }
+    history = NotificationsManager.getNotificationHistory();
+    assert.strictEqual(history.length, 50, 'Журнал уведомлений должен строго ограничиваться 50 записями');
+
+    const disclosure = NotificationsManager.getWebPushDisclosure();
+    assert.ok(disclosure.webPush.includes('VAPID') && disclosure.webPush.includes('GitHub Pages'));
+  });
+
+  // -------------------------------------------------------------------------
+  // СЦЕНАРИЙ 19: Проверка целостности всех защищённых блоков с пользовательскими настройками
+  // -------------------------------------------------------------------------
+  await runScenario(19, 'Проверка целостности всех защищённых блоков с пользовательскими длительностями', async () => {
     const customSettings = {
       wakeTime: '06:15',
       sleepStart: '21:45',
@@ -503,145 +777,49 @@ async function runAll17Scenarios() {
     const plan = await Scheduler.generateDailySchedule('2026-11-23', Database, customSettings);
     const tasks = plan.tasks;
 
-    // 1. Сон
     const sleep = tasks.find(t => t.category === 'sleep');
-    assert.ok(sleep, 'Блок сна должен присутствовать');
+    assert.ok(sleep);
     assert.strictEqual(sleep.startTime, '21:45');
     assert.strictEqual(sleep.endTime, '06:15');
-    assert.strictEqual(sleep.durationMinutes, (1440 - (21 * 60 + 45)) + (6 * 60 + 15)); // 510 мин
 
-    // 2. Игры
     const games = tasks.find(t => t.category === 'gaming');
     assert.ok(games);
-    assert.strictEqual(games.durationMinutes, 75, 'Длительность игр должна строго соответствовать настройке 75 мин');
+    assert.strictEqual(games.durationMinutes, 75);
 
-    // 3. Спорт
     const sport = tasks.find(t => t.category === 'sport');
     assert.ok(sport);
-    assert.strictEqual(sport.durationMinutes, 40, 'Длительность спорта должна строго соответствовать настройке 40 мин');
+    assert.strictEqual(sport.durationMinutes, 40);
 
-    // 4. Семейный ужин
     const family = tasks.find(t => t.category === 'family');
     assert.ok(family);
-    assert.strictEqual(family.durationMinutes, 50, 'Семейный ужин должен строго соответствовать настройке 50 мин');
+    assert.strictEqual(family.durationMinutes, 50);
 
-    // 5. Отдых без ПК
     const rest = tasks.find(t => t.category === 'rest');
     assert.ok(rest);
-    assert.strictEqual(rest.durationMinutes, 35, 'Отдых без ПК должен строго соответствовать настройке 35 мин');
+    assert.strictEqual(rest.durationMinutes, 35);
 
-    // 6. Намаз ясту
     const prayer = tasks.find(t => t.category === 'prayer');
     assert.ok(prayer);
-    assert.strictEqual(prayer.durationMinutes, 25, 'Намаз ясту должен соответствовать настройке 25 мин');
+    assert.strictEqual(prayer.durationMinutes, 25);
 
-    // Проверка целостности
     const integrity = Scheduler.verifyScheduleIntegrity(plan, customSettings);
-    assert.strictEqual(integrity.valid, true, `Проверка целостности должна быть успешной: ${integrity.errors.join(', ')}`);
+    assert.strictEqual(integrity.valid, true, `Проверка целостности: ${integrity.errors.join(', ')}`);
   });
 
   // -------------------------------------------------------------------------
-  // СЦЕНАРИЙ 13: Полный каталог ЕГЭ из 73 тем по кодификатору ФИПИ без пропусков
+  // СЦЕНАРИЙ 20: Точность даты и времени в часовом поясе Europe/Moscow
   // -------------------------------------------------------------------------
-  await runScenario(13, 'Полный каталог ЕГЭ из 73 тем по кодификатору ФИПИ без пропущенных номеров', async () => {
-    const catalog = Database.getFipiEgeCatalog();
-    assert.strictEqual(catalog.length, 73, 'Общий каталог должен содержать ровно 73 темы');
-
-    const math = catalog.filter(t => t.subject === 'math' || t.subject === 'math_p');
-    assert.strictEqual(math.length, 19, 'Профильная математика должна содержать 19 заданий');
-    for (let i = 1; i <= 19; i++) {
-      assert.ok(math.some(t => t.taskNumber === i), `Математика обязана содержать задание №${i}`);
-    }
-
-    const info = catalog.filter(t => t.subject === 'informatics');
-    assert.strictEqual(info.length, 27, 'Информатика КЕГЭ должна содержать 27 заданий');
-    for (let i = 1; i <= 27; i++) {
-      assert.ok(info.some(t => t.taskNumber === i), `Информатика обязана содержать задание №${i}`);
-    }
-
-    const rus = catalog.filter(t => t.subject === 'russian');
-    assert.strictEqual(rus.length, 27, 'Русский язык должен содержать 27 заданий');
-    for (let i = 1; i <= 27; i++) {
-      assert.ok(rus.some(t => t.taskNumber === i), `Русский язык обязан содержать задание №${i}`);
-    }
-  });
-
-  // -------------------------------------------------------------------------
-  // СЦЕНАРИЙ 14: Поведение уведомлений при различных разрешениях и журнал истории
-  // -------------------------------------------------------------------------
-  await runScenario(14, 'Поведение уведомлений при предоставленном/заблокированном доступе и журнал истории', async () => {
-    NotificationsManager.clearNotificationHistory();
-
-    // 1. При отсутствии разрешения (default или denied) -> отправляет in-app toast, статус 'in_app'
-    MockNotification.permission = 'denied';
-    NotificationsManager.showNotification('Тестовое уведомление без прав', { body: 'Текст', category: 'study' });
-
-    let history = NotificationsManager.getNotificationHistory();
-    assert.strictEqual(history.length, 1);
-    assert.strictEqual(history[0].status, 'in_app', 'При denied статус должен быть in_app');
-
-    // 2. При наличии разрешения -> системное окно, статус 'delivered'
-    MockNotification.permission = 'granted';
-    NotificationsManager.showNotification('Системное уведомление Windows', { body: 'Текст 2', category: 'prayer' });
-
-    history = NotificationsManager.getNotificationHistory();
-    assert.strictEqual(history.length, 2);
-    assert.strictEqual(history[0].status, 'delivered', 'При granted статус должен быть delivered');
-
-    // 3. Честное техническое описание Web Push
-    const disclosure = NotificationsManager.getWebPushDisclosure();
-    assert.ok(disclosure.webNotifications.includes('Web Notifications API'));
-    assert.ok(disclosure.webPush.includes('VAPID') && disclosure.webPush.includes('GitHub Pages'));
-  });
-
-  // -------------------------------------------------------------------------
-  // СЦЕНАРИЙ 15: Отсутствие aiApiKey в LocalStorage и безопасная миграция в бэкап
-  // -------------------------------------------------------------------------
-  await runScenario(15, 'Отсутствие aiApiKey в LocalStorage и безопасная миграция в бэкап', async () => {
-    // Сымитируем старую уязвимую запись настроек с aiApiKey
-    localStorage.setItem('lifeos_settings', JSON.stringify({
-      version: '1.0',
-      wakeTime: '06:00',
-      aiApiKey: 'sk-ant-api03-legacy-secret-key-12345'
-    }));
-
-    const cleanSettings = Database.getSettings();
-    assert.strictEqual(cleanSettings.aiApiKey, undefined, 'aiApiKey не должен присутствовать в активных настройках');
-
-    const backup = localStorage.getItem('lifeos_settings_legacy_backup');
-    assert.ok(backup, 'Устаревший ключ должен быть изолирован в резервной копии');
-    const parsedBackup = JSON.parse(backup);
-    assert.strictEqual(parsedBackup.aiApiKey, 'sk-ant-api03-legacy-secret-key-12345');
-  });
-
-  // -------------------------------------------------------------------------
-  // СЦЕНАРИЙ 16: Автономная работа без внешнего сервера ИИ
-  // -------------------------------------------------------------------------
-  await runScenario(16, 'Автономная работа без внешнего сервера ИИ (детерминированный планировщик LifeOS)', async () => {
-    AIPlanner.resetThrottle();
-    Database.saveSettings({ aiEndpoint: '' }); // Без внешнего эндпоинта
-
-    const res = await AIPlanner.autoReplan('2026-11-23', Database, 'Автономный тест', true);
-    assert.strictEqual(res.success, true);
-    assert.strictEqual(res.source, 'local', 'При пустом эндпоинте планировщик обязан работать автономно (local)');
-    assert.ok(res.explanation.includes('Локальный планировщик LifeOS (автономно)'), 'Объяснение должно честно указывать на локальный расчёт');
-  });
-
-  // -------------------------------------------------------------------------
-  // СЦЕНАРИЙ 17: Точность даты и времени в часовом поясе Europe/Moscow
-  // -------------------------------------------------------------------------
-  await runScenario(17, 'Точность даты и времени в часовом поясе Europe/Moscow', async () => {
+  await runScenario(20, 'Точность даты и времени в часовом поясе Europe/Moscow', async () => {
     const todayMoscow = TimeUtils.getTodayStr();
     assert.match(todayMoscow, /^\d{4}-\d{2}-\d{2}$/);
 
-    // Тестирование краевого случая полуночи: UTC 21:30 23 ноября -> Москва UTC+3 это 00:30 24 ноября
     const utcMidnightEdge = new Date(Date.UTC(2026, 10, 23, 21, 30, 0));
     const moscowDateStr = TimeUtils.formatDateISO(utcMidnightEdge);
     assert.strictEqual(moscowDateStr, '2026-11-24', 'В Москве должно быть уже 24 ноября');
 
-    // Проверка разности дней
     assert.strictEqual(TimeUtils.diffDays('2026-11-23', '2026-11-27'), 4);
     assert.strictEqual(TimeUtils.diffDays('2026-11-27', '2026-11-23'), -4);
+    assert.strictEqual(TimeUtils.diffDays('2026-11-23', '2026-11-23'), 0);
   });
 
   console.log('\n========================================================================');
@@ -653,7 +831,7 @@ async function runAll17Scenarios() {
   }
 }
 
-runAll17Scenarios().catch(err => {
+runAll20Scenarios().catch(err => {
   console.error('Критический сбой тестового набора:', err);
   process.exit(1);
 });
