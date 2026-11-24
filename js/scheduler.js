@@ -229,21 +229,59 @@ const Scheduler = {
 
     if (actualLessonsCount > 0 && schoolEndMin > wakeMin + 90) {
       const lunchDuration = Number(settings.lunchMinutes) || 40;
-      const lunchEndMin = schoolEndMin + lunchDuration;
-      tasks.push({
-        id: `road_home_lunch_${dateStr}`,
-        title: 'Возвращение домой и обед',
-        subtitle: has8thLesson ? 'Позднее возвращение (после 8 урока)' : 'Обед и восстановление сил',
-        startTime: this.minToTime(schoolEndMin),
-        endTime: this.minToTime(lunchEndMin),
-        durationMinutes: lunchDuration,
-        category: 'routine',
-        status: 'pending',
-        isProtected: true,
-        description: 'Дорога домой, горячий обед, переключение внимания.'
-      });
-      markOccupied(schoolEndMin, lunchEndMin, 'lunch');
-      freeTimeStartMin = lunchEndMin;
+
+      if (has8thLesson) {
+        // Во вторник и четверг: уроки заканчиваются в 14:35, дорога домой занимает около 25 минут.
+        const returnCommuteMinutes = Number(settings.returnCommuteMinutes) ||
+          Number(settings.commuteMinutes) || 25;
+        const homeArrivalMin = schoolEndMin + returnCommuteMinutes;
+        const lunchEndMin = homeArrivalMin + lunchDuration;
+
+        tasks.push({
+          id: `road_home_lunch_${dateStr}`,
+          title: 'Дорога домой',
+          subtitle: `Домой примерно к ${this.minToTime(homeArrivalMin)}`,
+          startTime: this.minToTime(schoolEndMin),
+          endTime: this.minToTime(homeArrivalMin),
+          durationMinutes: returnCommuteMinutes,
+          category: 'routine',
+          status: 'pending',
+          isProtected: true,
+          description: 'Дорога из школы домой.'
+        });
+        markOccupied(schoolEndMin, homeArrivalMin, 'road_home');
+
+        tasks.push({
+          id: `lunch_${dateStr}`,
+          title: 'Обед',
+          subtitle: 'После возвращения домой',
+          startTime: this.minToTime(homeArrivalMin),
+          endTime: this.minToTime(lunchEndMin),
+          durationMinutes: lunchDuration,
+          category: 'routine',
+          status: 'pending',
+          isProtected: true,
+          description: 'Горячий обед и восстановление сил.'
+        });
+        markOccupied(homeArrivalMin, lunchEndMin, 'lunch');
+        freeTimeStartMin = lunchEndMin;
+      } else {
+        const lunchEndMin = schoolEndMin + lunchDuration;
+        tasks.push({
+          id: `road_home_lunch_${dateStr}`,
+          title: 'Возвращение домой и обед',
+          subtitle: 'Обед и восстановление сил',
+          startTime: this.minToTime(schoolEndMin),
+          endTime: this.minToTime(lunchEndMin),
+          durationMinutes: lunchDuration,
+          category: 'routine',
+          status: 'pending',
+          isProtected: true,
+          description: 'Дорога домой и обед.'
+        });
+        markOccupied(schoolEndMin, lunchEndMin, 'lunch');
+        freeTimeStartMin = lunchEndMin;
+      }
     } else if (dayOfWeek === 7 || actualLessonsCount === 0) {
       // Воскресенье или день без уроков
       actualSchoolEndMin = this.timeToMin('13:00');

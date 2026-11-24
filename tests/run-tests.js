@@ -1,6 +1,6 @@
 /**
  * LifeOS v1.2 — Comprehensive Automated Test Suite
- * 25 Production Scenarios Verifying Data Safety, Clean Timetable Initialization,
+ * 26 Regression Scenarios Verifying Data Safety, Clean Timetable Initialization,
  * Unified Task Status System, Deduplicated Activity Log, Real Rescheduling,
  * Secret Purging, Honest Local AI Planner, Web Notifications, and Moscow Timezone Accuracy.
  */
@@ -202,9 +202,9 @@ async function runScenario(number, title, fn) {
   }
 }
 
-async function runAll25Scenarios() {
+async function runAll26Scenarios() {
   console.log('\n========================================================================');
-  console.log('--- LifeOS v1.2.3 — Полный комплекс из 25 тестовых сценариев ---');
+  console.log('--- LifeOS v1.2.4 — Полный комплекс из 26 тестовых сценариев ---');
   console.log('========================================================================\n');
 
   // -------------------------------------------------------------------------
@@ -260,7 +260,7 @@ async function runAll25Scenarios() {
     const tuesdayMath = timetable[1].lessons.find(l => l.subject === 'Дополнительная математика');
     assert.deepStrictEqual(
       { lessonNumber: tuesdayMath.lessonNumber, startTime: tuesdayMath.startTime, endTime: tuesdayMath.endTime, isAfterSchool: tuesdayMath.isAfterSchool },
-      { lessonNumber: 8, startTime: '14:45', endTime: '15:30', isAfterSchool: false }
+      { lessonNumber: 8, startTime: '13:55', endTime: '14:35', isAfterSchool: false }
     );
     const thursdayClass = timetable[3].lessons.find(l => l.isClassHour);
     assert.deepStrictEqual(
@@ -270,7 +270,7 @@ async function runAll25Scenarios() {
     const thursdayMath = timetable[3].lessons.find(l => l.subject === 'Дополнительная математика');
     assert.deepStrictEqual(
       { lessonNumber: thursdayMath.lessonNumber, startTime: thursdayMath.startTime, endTime: thursdayMath.endTime },
-      { lessonNumber: 8, startTime: '14:45', endTime: '15:30' }
+      { lessonNumber: 8, startTime: '13:55', endTime: '14:35' }
     );
     const thursdayNativeLit = timetable[3].lessons.find(l => l.subject === 'Родная (татарская) литература');
     assert.deepStrictEqual(
@@ -462,19 +462,33 @@ async function runAll25Scenarios() {
   // -------------------------------------------------------------------------
   // СЦЕНАРИЙ 8: Корректное распределение 8-го урока и обеда
   // -------------------------------------------------------------------------
-  await runScenario(8, 'Корректное распределение 8-го урока (до 15:30) и обеда (15:30–16:10)', async () => {
-    // Загружаем реалистичное расписание с 8 уроками во вторник
+  await runScenario(8, '8-й урок заканчивается в 14:35, дорога домой до 15:00, затем обед', async () => {
     await Database.seedRealisticSchoolTimetable();
-    Database.saveSettings({ schoolTimetableConfirmed: true });
+    Database.saveSettings({ schoolTimetableConfirmed: true, commuteMinutes: 25, lunchMinutes: 40 });
 
     const planTue = await Scheduler.generateDailySchedule('2026-11-24', Database);
     assert.strictEqual(planTue.has8thLesson, true, 'Во вторник зафиксирован 8-й урок');
-    assert.strictEqual(planTue.schoolEndTime, '15:30', 'Окончание 8-го урока — 15:30');
+    assert.strictEqual(planTue.schoolEndTime, '14:35', 'Окончание 8-го урока — 14:35');
 
-    const lunchTask = planTue.tasks.find(t => t.id && t.id.startsWith('road_home_lunch_'));
-    assert.ok(lunchTask, 'Блок возвращения домой и обеда должен присутствовать');
-    assert.strictEqual(lunchTask.startTime, '15:30', 'Обед после 8 уроков начинается ровно в 15:30');
-    assert.strictEqual(lunchTask.endTime, '16:10', 'Обед продолжается до 16:10 (40 минут)');
+    const roadHome = planTue.tasks.find(t => t.id && t.id.startsWith('road_home_lunch_'));
+    assert.ok(roadHome, 'Отдельная дорога домой должна присутствовать');
+    assert.strictEqual(roadHome.title, 'Дорога домой');
+    assert.strictEqual(roadHome.startTime, '14:35');
+    assert.strictEqual(roadHome.endTime, '15:00');
+    assert.strictEqual(roadHome.durationMinutes, 25);
+
+    const lunchTask = planTue.tasks.find(t => t.id === 'lunch_2026-11-24');
+    assert.ok(lunchTask, 'Обед должен начинаться после возвращения домой');
+    assert.strictEqual(lunchTask.startTime, '15:00');
+    assert.strictEqual(lunchTask.endTime, '15:40');
+    assert.strictEqual(lunchTask.durationMinutes, 40);
+
+    const planThu = await Scheduler.generateDailySchedule('2026-11-26', Database);
+    assert.strictEqual(planThu.schoolEndTime, '14:35');
+    const thuRoad = planThu.tasks.find(t => t.id && t.id.startsWith('road_home_lunch_'));
+    const thuLunch = planThu.tasks.find(t => t.id === 'lunch_2026-11-26');
+    assert.deepStrictEqual([thuRoad.startTime, thuRoad.endTime, thuLunch.startTime, thuLunch.endTime],
+      ['14:35', '15:00', '15:00', '15:40']);
 
     const integrity = Scheduler.verifyScheduleIntegrity(planTue);
     assert.strictEqual(integrity.valid, true, `Расписание вторника валидно: ${integrity.errors.join(', ')}`);
@@ -1052,9 +1066,9 @@ async function runAll25Scenarios() {
     };
 
     assert.deepStrictEqual(durationsFor(1), [5, 5, 20, 20, 5, 10], 'Понедельник: перемены с классным часом');
-    assert.deepStrictEqual(durationsFor(2), [5, 5, 20, 20, 5, 10, 60], 'Вторник: окно перед восьмой математикой');
+    assert.deepStrictEqual(durationsFor(2), [5, 5, 20, 20, 5, 10, 10], 'Вторник: перемена перед восьмой математикой');
     assert.deepStrictEqual(durationsFor(3), [5, 5, 20, 20, 5, 10], 'Среда: перемены между видимыми уроками');
-    assert.deepStrictEqual(durationsFor(4), [5, 5, 20, 20, 5, 10, 60], 'Четверг: классный час, 7-й урок и 8-я математика');
+    assert.deepStrictEqual(durationsFor(4), [5, 5, 20, 20, 5, 10, 10], 'Четверг: перемена перед восьмой математикой');
     assert.deepStrictEqual(durationsFor(5), [5, 5, 20, 20, 5, 10], 'Пятница: перемены между видимыми уроками');
     assert.deepStrictEqual(durationsFor(6), [5, 15, 15], 'Суббота: 5/15/15 минут');
 
@@ -1066,6 +1080,37 @@ async function runAll25Scenarios() {
     ), null, 'Пересечение не маскируется под перемену');
   });
 
+  // -------------------------------------------------------------------------
+  // СЦЕНАРИЙ 20c: Старые 45-минутные допки обновляются до 40 минут без дублей
+  // -------------------------------------------------------------------------
+  await runScenario('20c', 'Миграция старых допок с 14:45–15:30 на 13:55–14:35 без дублей', async () => {
+    await Database.seedUserSchoolTimetableFromScreenshots();
+    const tuesday = await Database.get('school_timetable', 2);
+    const thursday = await Database.get('school_timetable', 4);
+    tuesday.lessons.push({
+      id: 'school_tue_math_extra', lessonNumber: 8, subject: 'Дополнительная математика',
+      startTime: '14:45', endTime: '15:30', isExtra: true, isAfterSchool: false
+    });
+    thursday.lessons.push({
+      id: 'school_thu_math_extra', lessonNumber: 8, subject: 'Дополнительная математика',
+      startTime: '14:45', endTime: '15:30', isExtra: true, isAfterSchool: false
+    });
+    await Database.saveDayTimetable(2, tuesday.lessons);
+    await Database.saveDayTimetable(4, thursday.lessons);
+    Database.saveSettings({ schoolTimetableScreenshotsImported: true,
+      schoolTimetableSupplementsVersion: '2026-11-24-class-hours-math-extra-v1' });
+    await Database.ensureUserTimetableSupplements();
+    for (const dayOfWeek of [2, 4]) {
+      const day = await Database.get('school_timetable', dayOfWeek);
+      const extras = day.lessons.filter(l => l.subject === 'Дополнительная математика');
+      assert.strictEqual(extras.length, 1);
+      assert.deepStrictEqual(
+        { lessonNumber: extras[0].lessonNumber, startTime: extras[0].startTime, endTime: extras[0].endTime },
+        { lessonNumber: 8, startTime: '13:55', endTime: '14:35' }
+      );
+    }
+  });
+
   console.log('\n========================================================================');
   console.log(`ИТОГО СЦЕНАРИЕВ: ${totalTests} | УСПЕШНО: ${passedTests} | ПРОВАЛЕНО: ${totalTests - passedTests}`);
   console.log('========================================================================\n');
@@ -1075,7 +1120,7 @@ async function runAll25Scenarios() {
   }
 }
 
-runAll25Scenarios().catch(err => {
+runAll26Scenarios().catch(err => {
   console.error('Критический сбой тестового набора:', err);
   process.exit(1);
 });

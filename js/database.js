@@ -451,7 +451,7 @@ const Database = {
    */
   async ensureUserTimetableSupplements() {
     const settings = this.getSettings();
-    const version = '2026-11-24-class-hours-math-extra-v1';
+    const version = '2026-11-24-class-hours-math-extra-v2';
     if (settings.schoolTimetableScreenshotsImported !== true ||
         settings.schoolTimetableSupplementsVersion === version) {
       return 0;
@@ -489,17 +489,17 @@ const Database = {
 
     const tuesday = await this.get('school_timetable', 2);
     if (tuesday && Array.isArray(tuesday.lessons)) {
-      const hasMathExtra = tuesday.lessons.some(lesson =>
+      let mathExtra = tuesday.lessons.find(lesson =>
         lesson.id === 'school_tue_math_extra' ||
-        (lesson.subject === 'Дополнительная математика' && lesson.startTime === '14:45')
+        (lesson.subject === 'Дополнительная математика' && lesson.isExtra === true)
       );
-      if (!hasMathExtra) {
-        tuesday.lessons.push({
+      if (!mathExtra) {
+        mathExtra = {
           id: 'school_tue_math_extra',
           lessonNumber: 8,
           subject: 'Дополнительная математика',
-          startTime: '14:45',
-          endTime: '15:30',
+          startTime: '13:55',
+          endTime: '14:35',
           room: '',
           isClassHour: false,
           isExtra: true,
@@ -507,11 +507,23 @@ const Database = {
           isCanceled: false,
           isTest: false,
           notes: 'Дополнительное занятие по математике'
+        };
+        tuesday.lessons.push(mathExtra);
+        added++;
+      } else if (mathExtra.startTime === '14:45' && mathExtra.endTime === '15:30') {
+        Object.assign(mathExtra, {
+          lessonNumber: 8,
+          subject: 'Дополнительная математика',
+          startTime: '13:55',
+          endTime: '14:35',
+          isExtra: true,
+          isAfterSchool: false,
+          notes: 'Дополнительное занятие по математике'
         });
-        tuesday.lessons.sort((a, b) => a.lessonNumber - b.lessonNumber);
-        await this.saveDayTimetable(2, tuesday.lessons);
         added++;
       }
+      tuesday.lessons.sort((a, b) => a.lessonNumber - b.lessonNumber);
+      await this.saveDayTimetable(2, tuesday.lessons);
     }
 
     const thursday = await this.get('school_timetable', 4);
@@ -548,17 +560,17 @@ const Database = {
         added++;
       }
 
-      const hasMathExtra = thursday.lessons.some(lesson =>
+      let mathExtra = thursday.lessons.find(lesson =>
         lesson.id === 'school_thu_math_extra' ||
-        (lesson.subject === 'Дополнительная математика' && lesson.startTime === '14:45')
+        (lesson.subject === 'Дополнительная математика' && lesson.isExtra === true)
       );
-      if (!hasMathExtra) {
-        thursday.lessons.push({
+      if (!mathExtra) {
+        mathExtra = {
           id: 'school_thu_math_extra',
           lessonNumber: 8,
           subject: 'Дополнительная математика',
-          startTime: '14:45',
-          endTime: '15:30',
+          startTime: '13:55',
+          endTime: '14:35',
           room: '',
           isClassHour: false,
           isExtra: true,
@@ -566,11 +578,23 @@ const Database = {
           isCanceled: false,
           isTest: false,
           notes: 'Дополнительное занятие по математике'
+        };
+        thursday.lessons.push(mathExtra);
+        added++;
+      } else if (mathExtra.startTime === '14:45' && mathExtra.endTime === '15:30') {
+        Object.assign(mathExtra, {
+          lessonNumber: 8,
+          subject: 'Дополнительная математика',
+          startTime: '13:55',
+          endTime: '14:35',
+          isExtra: true,
+          isAfterSchool: false,
+          notes: 'Дополнительное занятие по математике'
         });
-        thursday.lessons.sort((a, b) => a.lessonNumber - b.lessonNumber);
-        await this.saveDayTimetable(4, thursday.lessons);
         added++;
       }
+      thursday.lessons.sort((a, b) => a.lessonNumber - b.lessonNumber);
+      await this.saveDayTimetable(4, thursday.lessons);
     }
 
     this.saveSettings({ schoolTimetableSupplementsVersion: version });
@@ -673,7 +697,7 @@ const Database = {
       { lessonNumber: 4, subject: 'Английский язык', startTime: '10:55', endTime: '11:40', room: '', isExtra: false, isAfterSchool: false, isCanceled: false },
       { lessonNumber: 5, subject: 'Химия', startTime: '11:55', endTime: '12:40', room: '', isExtra: false, isAfterSchool: false, isCanceled: false },
       { lessonNumber: 6, subject: 'История', startTime: '12:55', endTime: '13:40', room: '', isExtra: false, isAfterSchool: false, isCanceled: false },
-      { lessonNumber: 8, subject: '8-й урок: Профильный практикум ЕГЭ', startTime: '14:45', endTime: '15:30', room: '', isExtra: true, isAfterSchool: false, isCanceled: false, notes: 'Дополнительное занятие во вторник' }
+      { lessonNumber: 8, subject: '8-й урок: Профильный практикум ЕГЭ', startTime: '13:55', endTime: '14:35', room: '', isExtra: true, isAfterSchool: false, isCanceled: false, notes: 'Дополнительное занятие во вторник' }
     ]);
 
     // 3 - Среда (6 уроков, 08:00 - 13:40)
@@ -694,7 +718,7 @@ const Database = {
       { lessonNumber: 4, subject: 'Литература', startTime: '10:55', endTime: '11:40', room: '', isExtra: false, isAfterSchool: false, isCanceled: false },
       { lessonNumber: 5, subject: 'Английский язык', startTime: '11:55', endTime: '12:40', room: '', isExtra: false, isAfterSchool: false, isCanceled: false },
       { lessonNumber: 6, subject: 'Обществознание', startTime: '12:55', endTime: '13:40', room: '', isExtra: false, isAfterSchool: false, isCanceled: false },
-      { lessonNumber: 8, subject: '8-й урок: Олимпиадный IT-практикум', startTime: '14:45', endTime: '15:30', room: '', isExtra: true, isAfterSchool: false, isCanceled: false, notes: 'Дополнительное занятие в четверг' }
+      { lessonNumber: 8, subject: '8-й урок: Олимпиадный IT-практикум', startTime: '13:55', endTime: '14:35', room: '', isExtra: true, isAfterSchool: false, isCanceled: false, notes: 'Дополнительное занятие в четверг' }
     ]);
 
     // 5 - Пятница (6 уроков, 08:00 - 13:40)
