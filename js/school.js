@@ -163,7 +163,7 @@ const SchoolManager = {
       ` : (!isConfirmed ? `
         <div class="school-unconfirmed-banner" style="background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 12px 16px; margin-bottom: 1rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap;">
           <div style="color: #92400e; font-size: 0.95rem;">
-            <strong>⚠️ Расписание требует проверки:</strong> уроки не будут добавлены в активный план дня, пока вы не подтвердите их соответствие вашей школе.
+            <strong>⚠️ Расписание восстановлено из твоих скриншотов:</strong> проверь предметы и кабинеты. В субботнем снимке видны 4 урока; если есть продолжение, добавь его. До подтверждения уроки не попадут в активный план дня.
           </div>
           <div style="display: flex; gap: 8px; flex-wrap: wrap;">
             <button class="btn btn-sm btn-primary" onclick="SchoolManager.confirmTimetable()">✓ Проверить и подтвердить</button>

@@ -47,7 +47,8 @@ const Database = {
     aiEndpoint: '', // URL безопасного внешнего прокси
     isDemoMode: false,
     schoolTimetableConfirmed: false,
-    schoolTimetableOrigin: 'empty' // 'empty' | 'demo_template' | 'user_confirmed' | 'user_customized'
+    schoolTimetableOrigin: 'empty',
+    schoolTimetableScreenshotsImported: false
   },
 
   /**
@@ -414,21 +415,50 @@ const Database = {
   // ==========================================
   // НАЧАЛЬНЫЕ ДАННЫЕ И МИГРАЦИЯ
   // ==========================================
+  /**
+   * Однократный перенос школьного расписания из пользовательских скриншотов от 23.11.2026.
+   * Сохраняются только видимые предметы, время и кабинеты; неизвестные уроки не выдумываются.
+   */
+  async seedUserSchoolTimetableFromScreenshots() {
+    const rawDays = [[["Информатика","08:45","09:25","218"],["Алгебра и начала математического анализа","09:30","10:10","304"],["Иностранный (английский) язык","10:30","11:10","218"],["Физика","11:30","12:10","218"],["Физика","12:15","12:55","218"],["Русский язык","13:05","13:45","214"]],[["История","08:00","08:40","218"],["Литература","08:45","09:25","214"],["Физика","09:30","10:10","218"],["Геометрия","10:30","11:10","304"],["Индивидуальный проект","11:30","12:10","313"],["Родной (татарский) язык","12:15","12:55","106"],["География","13:05","13:45","218"]],[["История","08:00","08:40","218","test"],["Геометрия","08:45","09:25","304"],["Иностранный (английский) язык","09:30","10:10","218"],["Литература","10:30","11:10","218"],["Физика","11:30","12:10","218"],["Алгебра и начала математического анализа","12:15","12:55","304"],["Вероятность и статистика","13:05","13:45","304"]],[["Химия","08:00","08:40","218"],["Биология","08:45","09:25","218"],["Информатика","09:30","10:10","218"],["Обществознание","10:30","11:10","326"],["Геометрия","11:30","12:10","304"],["Родная (татарская) литература","12:15","12:55","106"]],[["Литература","08:00","08:40","218"],["Иностранный (английский) язык","08:45","09:25","218"],["Информатика","09:30","10:10","218"],["Основы безопасности и защиты Родины","10:30","11:10","218"],["Обществознание","11:30","12:10","326"],["Физика","12:15","12:55","218"],["Физическая культура","13:05","13:45","203"]],[["Физическая культура","08:00","08:40","203"],["Алгебра и начала математического анализа","08:45","09:25","304"],["Русский язык","09:40","10:20","218"],["Алгебра и начала математического анализа","10:35","11:15","304"]]];
+    for (let dayOfWeek = 1; dayOfWeek <= 7; dayOfWeek++) {
+      const rawLessons = rawDays[dayOfWeek - 1] || [];
+      const lessons = rawLessons.map((item, index) => ({
+        lessonNumber: index + 1,
+        subject: item[0],
+        startTime: item[1],
+        endTime: item[2],
+        room: item[3],
+        isExtra: false,
+        isAfterSchool: false,
+        isCanceled: false,
+        isTest: item[4] === 'test'
+      }));
+      await this.saveDayTimetable(dayOfWeek, lessons);
+    }
+    this.saveSettings({
+      schoolTimetableConfirmed: false,
+      schoolTimetableOrigin: 'user_screenshots_imported',
+      schoolTimetableScreenshotsImported: true
+    });
+    return rawDays.reduce((sum, day) => sum + day.length, 0);
+  },
+
   async checkAndSeedData() {
     // 1. Синхронизация каталога тем ЕГЭ без потери пользовательского прогресса
     await this.syncEgeTopicsCatalog();
 
-    // 2. Расписание школы: при чистом старте создаём пустую сетку без вымышленных уроков
+    // 2. Восстановление реального расписания из скриншотов пользователя.
+    // Только новая база или старая пустая сетка v1.2; уже заполненные дни не трогаем.
     const timetable = await this.getAll('school_timetable');
-    if (timetable.length === 0) {
-      for (let day = 1; day <= 7; day++) {
-        await this.saveDayTimetable(day, []);
-      }
-      this.saveSettings({
-        schoolTimetableConfirmed: false,
-        schoolTimetableOrigin: 'empty'
-      });
-    }
+    const lessonCount = timetable.reduce((sum, day) => sum + ((day.lessons || []).length), 0);
+    const settings = this.getSettings();
+    const shouldRestore = timetable.length === 0 || (
+      lessonCount === 0 &&
+      settings.schoolTimetableOrigin === 'empty' &&
+      settings.schoolTimetableScreenshotsImported !== true
+    );
+    if (shouldRestore) await this.seedUserSchoolTimetableFromScreenshots();
 
     // 3. Проекты (если пусто, инициализируем проект «Миросборка»)
     const projects = await this.getAll('projects');

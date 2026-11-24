@@ -202,15 +202,15 @@ async function runScenario(number, title, fn) {
   }
 }
 
-async function runAll20Scenarios() {
+async function runAll24Scenarios() {
   console.log('\n========================================================================');
-  console.log('--- LifeOS v1.2 — Полный комплекс из 20 тестовых сценариев ---');
+  console.log('--- LifeOS v1.2 — Полный комплекс из 24 тестовых сценариев ---');
   console.log('========================================================================\n');
 
   // -------------------------------------------------------------------------
   // СЦЕНАРИЙ 1: Первый запуск с пустой базой данных (чистый старт)
   // -------------------------------------------------------------------------
-  await runScenario(1, 'Чистый старт: первый запуск, 0 фиктивных уроков, пустой timetable, метрики 0', async () => {
+  await runScenario(1, 'Первый запуск: реальное школьное расписание перенесено из пользовательских скриншотов', async () => {
     localStorage.clear();
     sessionStorage.clear();
     await Database.init();
@@ -240,13 +240,30 @@ async function runAll20Scenarios() {
 
     const settings = Database.getSettings();
     assert.strictEqual(settings.version, '1.2');
-    assert.strictEqual(settings.schoolTimetableConfirmed, false, 'Расписание должно требовать проверки пользователя');
-    assert.strictEqual(settings.schoolTimetableOrigin, 'empty', 'Происхождение расписания при чистом старте — empty');
+    assert.strictEqual(settings.schoolTimetableConfirmed, false);
+    assert.strictEqual(settings.schoolTimetableOrigin, 'user_screenshots_imported');
+    assert.strictEqual(settings.schoolTimetableScreenshotsImported, true);
+    const timetable = (await Database.getSchoolTimetable()).sort((a, b) => a.dayOfWeek - b.dayOfWeek);
+    assert.strictEqual(timetable.length, 7);
+    assert.deepStrictEqual(timetable.map(d => (d.lessons || []).length), [6, 7, 7, 6, 7, 4, 0]);
+    assert.strictEqual(timetable[0].lessons[0].subject, 'Информатика');
+    assert.strictEqual(timetable[0].lessons[0].startTime, '08:45');
+    assert.strictEqual(timetable[0].lessons[0].room, '218');
+    assert.strictEqual(timetable[2].lessons[0].isTest, true);
+    assert.strictEqual(timetable[5].lessons[3].endTime, '11:15');
+    assert.ok(!timetable.flatMap(d => d.lessons || []).some(l => l.subject === 'Разговоры о важном'));
+  });
 
-    const timetable = await Database.getSchoolTimetable();
-    assert.strictEqual(timetable.length, 7, 'В базе создано 7 дней недели');
-    const totalLessons = timetable.reduce((acc, d) => acc + (d.lessons ? d.lessons.length : 0), 0);
-    assert.strictEqual(totalLessons, 0, 'При чистом старте уроков должно быть ровно 0 (без выдуманных уроков)');
+  // -------------------------------------------------------------------------
+  // СЦЕНАРИЙ 1b: Повторная инициализация не перезаписывает правки пользователя
+  // -------------------------------------------------------------------------
+  await runScenario('1b', 'Повторная инициализация не перезаписывает изменённое пользователем расписание', async () => {
+    const monday = await Database.get('school_timetable', 1);
+    monday.lessons[0].subject = 'Пользовательская правка — информатика';
+    await Database.saveDayTimetable(1, monday.lessons);
+    await Database.checkAndSeedData();
+    const afterRestart = await Database.get('school_timetable', 1);
+    assert.strictEqual(afterRestart.lessons[0].subject, 'Пользовательская правка — информатика');
   });
 
   // -------------------------------------------------------------------------
@@ -984,7 +1001,7 @@ async function runAll20Scenarios() {
   }
 }
 
-runAll20Scenarios().catch(err => {
+runAll24Scenarios().catch(err => {
   console.error('Критический сбой тестового набора:', err);
   process.exit(1);
 });
