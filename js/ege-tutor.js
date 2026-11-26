@@ -20,7 +20,7 @@ const EgeTutor = {
     { id:"m10", subject:"math", topic:"Стереометрия: объём", tag:"geometry", q:"Найди объём куба с ребром 3.", options:["9","18","27","36"], answer:2, explain:"Объём куба V = a³. При a = 3 получаем 3³ = 27." },
 
     { id:"i1", subject:"informatics", topic:"Двоичная система счисления", tag:"binary", q:"Переведи число 10110₂ в десятичную систему.", options:["18","20","22","24"], answer:2, explain:"10110₂ = 1·16 + 0·8 + 1·4 + 1·2 + 0·1 = 22." },
-    { id:"i2", subject:"informatics", topic:"Циклы Python", tag:"python", q:"Что выведет код: s = 0; for i in range(1, 5): s += i; print(s)?", options:["9","10","15","5"], answer:1, explain:"range(1, 5) перебирает 1, 2, 3, 4. Сумма равна 1 + 2 + 3 + 4 = 10." },
+    { id:"i2", subject:"informatics", topic:"Циклы Python", tag:"python", q:"Какое значение будет у s после цикла for i in range(1, 5): s += i, если изначально s = 0?", options:["9","10","15","5"], answer:1, explain:"range(1, 5) перебирает 1, 2, 3, 4. Сумма равна 1 + 2 + 3 + 4 = 10." },
     { id:"i3", subject:"informatics", topic:"Логические выражения", tag:"logic", q:"A = 0, B = 1. Чему равно (A or B) and not A?", options:["0","1","Невозможно определить","Ошибка"], answer:1, explain:"A or B = 1. not A = 1. Тогда 1 and 1 = 1." },
     { id:"i4", subject:"informatics", topic:"Целочисленное деление", tag:"python", q:"Чему равны 17 // 5 и 17 % 5 соответственно?", options:["3 и 2","2 и 3","3 и 1","4 и 2"], answer:0, explain:"17 // 5 — целая часть частного, это 3. Остаток 17 % 5 равен 2." },
     { id:"i5", subject:"informatics", topic:"Сортировка списков Python", tag:"python", q:"Что выведет код: a = [4, 1, 3]; a.sort(); print(a[0])?", options:["4","3","1","[1, 3, 4]"], answer:2, explain:"sort() сортирует список по возрастанию. Первый элемент отсортированного списка — 1." },
@@ -28,7 +28,7 @@ const EgeTutor = {
     { id:"r1", subject:"russian", topic:"Орфоэпия: ударения", tag:"russian_orthoepy", q:"В каком слове ударение поставлено правильно?", options:["звонИт","звОнит","звонИтЬ","звонитО"], answer:0, explain:"Нормативное ударение: звонИт." },
     { id:"r2", subject:"russian", topic:"Паронимы", tag:"russian_lexis", q:"Выбери нормативное сочетание.", options:["Одеть пальто","Надеть пальто","Надеть ребёнка","Одеть шапку на себя"], answer:1, explain:"Надеть можно одежду на себя; одеть — кого-либо, например одеть ребёнка." },
     { id:"r3", subject:"russian", topic:"Грамматические нормы", tag:"russian_grammar", q:"Выбери правильную форму числительного: «располагать ... рублями».", options:["пятьсот","пятистами","пятьюстами","пятьюста"], answer:2, explain:"В творительном падеже составное числительное 500 имеет форму «пятьюстами»." },
-    { id:"r4", subject:"russian", topic:"Правописание Н и НН", tag:"russian_spelling", q:"В каком словосочетании слово написано верно?", options:["кожанный ремень","кожаный ремень","кожаныйй ремень","кожаннный ремень"], answer:1, explain:"В прилагательном «кожаный» пишется одна Н: это слово-исключение из правила о суффиксах -ан-/-ян-/-ин-." },
+    { id:"r4", subject:"russian", topic:"Правописание Н и НН", tag:"russian_spelling", q:"В каком словосочетании слово написано верно?", options:["кожанный ремень","кожаный ремень","кожаныйй ремень","кожаннный ремень"], answer:1, explain:"В суффиксах -ан-/-ян-/-ин- обычно пишется одна Н. В слове «кожаный» суффикс -ан-, поэтому одна Н." },
     { id:"r5", subject:"russian", topic:"Пунктуация", tag:"russian_punctuation", q:"В каком предложении запятая поставлена правильно?", options:["Когда стемнело мы вернулись домой.","Когда стемнело, мы вернулись домой.","Когда, стемнело мы вернулись домой.","Когда стемнело мы, вернулись домой."], answer:1, explain:"Придаточная часть «Когда стемнело» отделяется от главной запятой." }
   ],
 
@@ -75,7 +75,7 @@ const EgeTutor = {
       example:"range(1, 4) перебирает 1, 2, 3. Число 4 в цикл не входит.",
       task:"Чему равна сумма чисел, которые перебирает range(2, 6)?",
       options:["10","14","15","20"], answer:2,
-      explain:"Перебираются 2, 3, 4, 5. Их сумма равна 14. Исправление: правильный вариант — 14.",
+      explain:"range(2, 6) перебирает 2, 3, 4, 5. Сумма: 2 + 3 + 4 + 5 = 14.",
       tags:["python"]
     },
     binary: {
@@ -217,10 +217,7 @@ const EgeTutor = {
     const done = state.daily && state.daily[this.today()] && state.daily[this.today()].done;
     const diagnosticDone = !!state.diagnostic;
     const status = done ? "Занятие за сегодня отмечено" : (diagnosticDone ? "Тема выбрана с учётом твоих ответов" : "Сначала проверь знания — затем темы станут персональными");
-    return '<div class="ege-today-card"><div><span class="ege-eyebrow">ЕГЭ • СЕГОДНЯ</span><h3>' +
-      (diagnosticDone ? this.escape(lesson.title) : "Пройди стартовую диагностику") +
-      '</h3><p>' + status + '</p></div><button class="btn btn-primary" onclick="App.navigateTo(\\'ege\\')">' +
-      (diagnosticDone ? (done ? "Открыть тренер" : "Начать занятие") : "Начать тест") + '</button></div>';
+    return `<div class="ege-today-card"><div><span class="ege-eyebrow">ЕГЭ • СЕГОДНЯ</span><h3>${diagnosticDone ? this.escape(lesson.title) : "Пройди стартовую диагностику"}</h3><p>${status}</p></div><button class="btn btn-primary" onclick="App.navigateTo('ege')">${diagnosticDone ? (done ? "Открыть тренер" : "Начать занятие") : "Начать тест"}</button></div>`;
   },
 
   init() { this.render(); },
@@ -254,6 +251,9 @@ const EgeTutor = {
   },
 
   exitDiagnostic() {
+    const state = this.readState();
+    state.session = null;
+    this.writeState(state);
     this.render();
   },
 
@@ -297,7 +297,7 @@ const EgeTutor = {
   markLessonDone() {
     const state = this.readState();
     state.daily = state.daily || {};
-    if (!state.daily[this.today()]) return;
+    if (!state.daily[this.today()] || state.daily[this.today()].done) return;
     state.daily[this.today()].done = true;
     state.daily[this.today()].completedAt = new Date().toISOString();
     state.lessonStats = state.lessonStats || {};
