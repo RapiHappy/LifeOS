@@ -204,7 +204,7 @@ const EgeTutor = {
       phase:plan.phase,
       instruction:plan.instruction
     };
-  }
+  },
 
   getTomorrowPlan() {
     const p = this.today().split("-").map(Number);
