@@ -204,7 +204,7 @@ async function runScenario(number, title, fn) {
 
 async function runAll26Scenarios() {
   console.log('\n========================================================================');
-  console.log('--- LifeOS v1.2.4 — Полный комплекс из 26 тестовых сценариев ---');
+  console.log('--- LifeOS v1.2.6 — Полный комплекс из 26 тестовых сценариев ---');
   console.log('========================================================================\n');
 
   // -------------------------------------------------------------------------
@@ -960,14 +960,14 @@ async function runAll26Scenarios() {
     NotificationsManager.clearNotificationHistory();
 
     MockNotification.permission = 'denied';
-    NotificationsManager.showNotification('Тест denied', { body: 'Текст', category: 'study' });
+    await NotificationsManager.showNotification('Тест denied', { body: 'Текст', category: 'study' });
 
     let history = NotificationsManager.getNotificationHistory();
     assert.strictEqual(history.length, 1);
     assert.strictEqual(history[0].status, 'in_app', 'При denied статус должен быть in_app');
 
     MockNotification.permission = 'granted';
-    NotificationsManager.showNotification('Тест granted', { body: 'Текст 2', category: 'prayer' });
+    await NotificationsManager.showNotification('Тест granted', { body: 'Текст 2', category: 'prayer' });
 
     history = NotificationsManager.getNotificationHistory();
     assert.strictEqual(history.length, 2);
@@ -975,10 +975,24 @@ async function runAll26Scenarios() {
 
     // Переполнение истории: добавим 60 уведомлений
     for (let i = 0; i < 60; i++) {
-      NotificationsManager.showNotification(`Тест ${i}`, { body: `Тело ${i}` });
+      await NotificationsManager.showNotification(`Тест ${i}`, { body: `Тело ${i}` });
     }
     history = NotificationsManager.getNotificationHistory();
     assert.strictEqual(history.length, 50, 'Журнал уведомлений должен строго ограничиваться 50 записями');
+
+    // Системное уведомление не должно считаться успешным при отклонении API браузера.
+    const originalNotification = globalThis.Notification;
+    const originalWindowNotification = globalThis.window.Notification;
+    function ThrowingNotification() {
+      throw new Error('Simulated browser/OS notification rejection');
+    }
+    ThrowingNotification.permission = 'granted';
+    globalThis.Notification = ThrowingNotification;
+    globalThis.window.Notification = ThrowingNotification;
+    const failedTest = await NotificationsManager.sendTestNotification();
+    assert.strictEqual(failedTest.success, false, 'Тест должен честно сообщать о провале системного API');
+    globalThis.Notification = originalNotification;
+    globalThis.window.Notification = originalWindowNotification;
 
     const disclosure = NotificationsManager.getWebPushDisclosure();
     assert.ok(disclosure.webPush.includes('VAPID') && disclosure.webPush.includes('GitHub Pages'));

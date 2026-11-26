@@ -34,7 +34,7 @@ const SettingsManager = {
     const yastuCalc = PrayerManager.calculateYastu(todayStr, s);
 
     const notifStatusBadges = {
-      granted: '<span class="badge badge-success">Разрешено в Windows</span>',
+      granted: '<span class="badge badge-success">Разрешено браузером</span>',
       denied: '<span class="badge badge-danger">Заблокировано браузером</span>',
       default: '<span class="badge badge-warning">Требуется запрос</span>',
       unsupported: '<span class="badge badge-muted">Не поддерживается</span>'
@@ -166,21 +166,21 @@ const SettingsManager = {
           <div class="section-card-header">
             <div>
               <h3>Системные уведомления рабочего стола</h3>
-              <p class="text-muted">Всплывающие уведомления в Windows через Web Notifications API при открытой вкладке браузера.</p>
+              <p class="text-muted">Системные уведомления Windows, пока LifeOS открыт и браузер выполняет страницу.</p>
             </div>
             <div>${notifStatusBadges[notifStatus] || ''}</div>
           </div>
 
           <div style="background: #f8fafc; border-left: 4px solid #3b82f6; padding: 12px 14px; border-radius: 6px; margin: 12px 0; font-size: 13px; line-height: 1.5;">
-            <strong>ℹ️ Честная архитектура уведомлений (Web Notifications vs Web Push):</strong><br>
-            • <strong>Web Notifications API:</strong> работает локально в браузере и отображает уведомления Windows, пока вкладка LifeOS открыта или свёрнута в трей.<br>
+            <strong>ℹ️ Как работают уведомления:</strong><br>
+            • <strong>Локальные системные уведомления:</strong> отправляются через Service Worker, пока вкладка LifeOS открыта; в фоне браузер может замедлять таймеры. После закрытия вкладки проверка расписания прекращается.<br>
             • <strong>Web Push API:</strong> для доставки при <em>полностью закрытом браузере</em> требует серверного бэкенда (сервер очередей, VAPID-ключи, браузерный Push Service). На статическом GitHub Pages без бэкенда Web Push технически невозможен. LifeOS надёжно фиксирует события и показывает пропущенные уведомления при возвращении во вкладку.
           </div>
 
           <div class="notif-actions-bar">
             ${notifStatus !== 'granted' ? `
               <button class="btn btn-primary btn-sm" onclick="SettingsManager.requestNotifPermission()">
-                🔔 Запросить разрешение Windows
+                🔔 Разрешить уведомления браузера
               </button>
             ` : ''}
             <button class="btn btn-secondary btn-sm" onclick="SettingsManager.testNotification()">
@@ -522,18 +522,19 @@ const SettingsManager = {
     if (typeof NotificationsManager !== 'undefined' && NotificationsManager.requestPermission) {
       const status = await NotificationsManager.requestPermission();
       if (status === 'granted') {
-        NotificationsManager.sendTestNotification();
+        const result = await NotificationsManager.sendTestNotification();
+        alert(result.message);
+      } else {
+        alert('Разрешение не выдано. Проверьте разрешения сайта в браузере.');
       }
     }
     this.render();
   },
 
-  testNotification() {
+  async testNotification() {
     if (typeof NotificationsManager !== 'undefined' && NotificationsManager.sendTestNotification) {
-      const res = NotificationsManager.sendTestNotification();
-      if (res && !res.success) {
-        alert(res.message);
-      }
+      const result = await NotificationsManager.sendTestNotification();
+      alert(result.message);
     } else {
       alert('Модуль уведомлений не загружен.');
     }

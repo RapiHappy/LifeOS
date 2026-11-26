@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lifeos-cache-v1.2.4';
+const CACHE_NAME = 'lifeos-cache-v1.2.6';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -75,6 +75,22 @@ self.addEventListener('fetch', (event) => {
           return caches.match('./index.html');
         }
       });
+    })
+  );
+});
+
+ 
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
+      for (const client of windowClients) {
+        if (client.url.startsWith(self.registration.scope) && 'focus' in client) {
+          return client.focus();
+        }
+      }
+      if (self.clients.openWindow) return self.clients.openWindow('./');
+      return undefined;
     })
   );
 });

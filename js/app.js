@@ -734,15 +734,19 @@ const App = {
     respBox.innerHTML = `<strong>Вопрос:</strong> ${question}<br><br><strong>ИИ LifeOS:</strong> ${answer}`;
   },
 
-  registerServiceWorker() {
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('./sw.js').then((reg) => {
-          console.log('LifeOS ServiceWorker зарегистрирован успешно:', reg.scope);
-        }).catch((err) => {
-          console.warn('Ошибка регистрации ServiceWorker:', err);
-        });
-      });
+  async registerServiceWorker() {
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
+      console.warn('LifeOS: Service Worker API недоступен в этом браузере или контексте.');
+      return null;
+    }
+    try {
+      const registration = await navigator.serviceWorker.register('./sw.js', { scope: './' });
+      await navigator.serviceWorker.ready;
+      console.log('LifeOS ServiceWorker зарегистрирован и готов:', registration.scope);
+      return registration;
+    } catch (error) {
+      console.error('LifeOS: ошибка регистрации Service Worker:', error);
+      return null;
     }
   }
 };
