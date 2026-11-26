@@ -307,7 +307,7 @@ const Scheduler = {
     tasks.push(yastuBlock);
     markOccupied(yastuStartMin, yastuEndMin, 'yastu');
 
-    // 5. ЗАЩИЩЁННЫЕ БЛОКИ ВТОРОЙ ПОЛОВИНЫ ДНЯ (строго по настройкам пользователя):
+    // 5. ЗАЩИЩЁННЫЕ БЛОКИ: игры после школы, семья и восстановление вечером.
     const gameDuration = settings.gameMinutes !== undefined ? Number(settings.gameMinutes) : 60;
     const sportDuration = settings.sportMinutes !== undefined ? Number(settings.sportMinutes) : 30;
     const familyDuration = settings.familyMinutes !== undefined ? Number(settings.familyMinutes) : 40;
@@ -328,7 +328,7 @@ const Scheduler = {
       description: 'Строго охраняемый физиологический сон для высокой продуктивности.'
     });
 
-    // Отдых без ПК перед сном: (sleepMin - offlineRestDuration) .. sleepMin (например, 21:00 - 21:30)
+    // Отдых без компьютера перед сном.
     const restStartMin = sleepMin - offlineRestDuration;
     tasks.push({
       id: `offline_rest_${dateStr}`,
@@ -344,52 +344,67 @@ const Scheduler = {
     });
     markOccupied(restStartMin, sleepMin, 'offline_rest');
 
-    // Игры на ПК: (restStartMin - gameDuration) .. restStartMin (например, 20:00 - 21:00)
-    const gameStartMin = restStartMin - gameDuration;
-    tasks.push({
-      id: `pc_games_${dateStr}`,
-      title: 'Игры на ПК',
-      subtitle: `Запланированное игровое время (${gameDuration} мин)`,
-      startTime: this.minToTime(gameStartMin),
-      endTime: this.minToTime(restStartMin),
-      durationMinutes: gameDuration,
-      category: 'gaming',
-      status: 'pending',
-      isProtected: true,
-      description: 'Законный запланированный отдых. Не является наградой за выполненные уроки.'
-    });
-    markOccupied(gameStartMin, restStartMin, 'gaming');
-
-    // Семейное время (ужин с родителями): 40 мин (например, 19:20 - 20:00)
-    const familyStartMin = gameStartMin - familyDuration;
+    // Семейное время остаётся вечером, примерно в прежнем окне 19:20–20:00.
+    const familyEndMin = restStartMin - 60;
+    const familyStartMin = familyEndMin - familyDuration;
     tasks.push({
       id: `family_dinner_${dateStr}`,
       title: 'Ужин с родителями и семейное время',
       subtitle: 'Общение с семьёй, совместный ужин',
       startTime: this.minToTime(familyStartMin),
-      endTime: this.minToTime(gameStartMin),
+      endTime: this.minToTime(familyEndMin),
       durationMinutes: familyDuration,
       category: 'family',
       status: 'pending',
       isProtected: true,
       description: 'Ценное время с близкими: ужин, обсуждение новостей, поддержка контакта с родителями.'
     });
-    markOccupied(familyStartMin, gameStartMin, 'family');
+    markOccupied(familyStartMin, familyEndMin, 'family');
 
-    // Спорт (30 минут по умолчанию): размещаем в свободное окно, избегая наложения на ясту
-    let sportStartMin = yastuEndMin + 10;
-    if (sportStartMin + sportDuration > familyStartMin) {
-      sportStartMin = familyStartMin - sportDuration - 10;
+    // Игры на ПК — первый свободный блок после возвращения домой и обеда.
+    // Если время игр пересекается с ясту, ищем ближайшее непрерывное окно до семейного времени.
+    const gameCandidates = [
+      freeTimeStartMin,
+      yastuStartMin - gameDuration,
+      yastuEndMin + 10
+    ].filter((value, index, list) => list.indexOf(value) === index).sort((a, b) => a - b);
+    let gameStartMin = gameCandidates.find(candidate =>
+      candidate >= freeTimeStartMin &&
+      candidate + gameDuration <= familyStartMin &&
+      !(candidate < yastuEndMin && candidate + gameDuration > yastuStartMin)
+    );
+    if (gameStartMin === undefined) {
+      gameStartMin = Math.max(freeTimeStartMin, yastuEndMin + 10);
     }
-    // Если накладывается на ясту, смещаем до намаза
-    if (sportStartMin < yastuEndMin && (sportStartMin + sportDuration) > yastuStartMin) {
-      sportStartMin = yastuStartMin - sportDuration - 10;
-    }
-    if (sportStartMin < freeTimeStartMin + 10) {
-      sportStartMin = freeTimeStartMin + 10;
-      if (sportStartMin < yastuEndMin && (sportStartMin + sportDuration) > yastuStartMin) {
-        sportStartMin = yastuEndMin + 10;
-      }
+    const gameEndMin = gameStartMin + gameDuration;
+    tasks.push({
+      id: `pc_games_${dateStr}`,
+      title: 'Игры на ПК',
+      subtitle: `После школы и обеда • ${gameDuration} минут`,
+      startTime: this.minToTime(gameStartMin),
+      endTime: this.minToTime(gameEndMin),
+      durationMinutes: gameDuration,
+      category: 'gaming',
+      status: 'pending',
+      isProtected: true,
+      description: 'Запланированный отдых после школы и обеда. Не является наградой за выполненные уроки.'
+    });
+    markOccupied(gameStartMin, gameEndMin, 'gaming');
+
+    // Спорт размещаем после игр, стараясь поставить его после ясту и до семейного времени.
+    const sportEarliestMin = gameEndMin + 10;
+    const sportCandidates = [
+      yastuEndMin + 10,
+      yastuStartMin - sportDuration - 10,
+      sportEarliestMin
+    ];
+    let sportStartMin = sportCandidates.find(candidate =>
+      candidate >= sportEarliestMin &&
+      candidate + sportDuration <= familyStartMin &&
+      !(candidate < yastuEndMin && candidate + sportDuration > yastuStartMin)
+    );
+    if (sportStartMin === undefined) {
+      sportStartMin = sportEarliestMin;
     }
 
     tasks.push({
