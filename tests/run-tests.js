@@ -491,6 +491,21 @@ async function runAll26Scenarios() {
     assert.deepStrictEqual([thuRoad.startTime, thuRoad.endTime, thuLunch.startTime, thuLunch.endTime],
       ['14:35', '15:00', '15:00', '15:40']);
 
+    const tueGames = planTue.tasks.find(t => t.category === 'gaming');
+    const tueFamily = planTue.tasks.find(t => t.category === 'family');
+    assert.ok(tueGames && tueFamily, 'Игры и семейный блок должны быть в плане');
+    assert.ok(Scheduler.timeToMin(tueGames.startTime) >= Scheduler.timeToMin(lunchTask.endTime),
+      'Игры должны начинаться после обеда');
+    assert.ok(Scheduler.timeToMin(tueGames.endTime) <= Scheduler.timeToMin(tueFamily.startTime),
+      'Игры должны завершаться до вечернего семейного времени');
+
+    const thuGames = planThu.tasks.find(t => t.category === 'gaming');
+    const thuFamily = planThu.tasks.find(t => t.category === 'family');
+    assert.ok(Scheduler.timeToMin(thuGames.startTime) >= Scheduler.timeToMin(thuLunch.endTime),
+      'В четверг игры также должны начинаться после обеда');
+    assert.ok(Scheduler.timeToMin(thuGames.endTime) <= Scheduler.timeToMin(thuFamily.startTime),
+      'В четверг игры должны завершаться до семейного времени');
+
     const integrity = Scheduler.verifyScheduleIntegrity(planTue);
     assert.strictEqual(integrity.valid, true, `Расписание вторника валидно: ${integrity.errors.join(', ')}`);
   });
