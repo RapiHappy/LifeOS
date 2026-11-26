@@ -1,0 +1,44 @@
+
+/* ЕГЭ-тренер LifeOS */
+.ege-page { max-width: 1120px; margin: 0 auto; padding: 1.25rem 0 2rem; }
+.ege-hero, .ege-panel, .ege-question-card, .ege-lesson-panel { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-lg); padding: 1.5rem; box-shadow: var(--shadow-sm); }
+.ege-hero { padding: clamp(1.5rem, 4vw, 2.5rem); background: linear-gradient(135deg,#fff 0%,#eef2ff 100%); }
+.ege-eyebrow { display:block; color:var(--primary); font-size:.72rem; font-weight:800; letter-spacing:.09em; margin-bottom:.45rem; }
+.ege-hero h2,.ege-dashboard-head h2 { font-size:clamp(1.5rem,3vw,2rem); margin-bottom:.55rem; }
+.ege-hero p,.ege-dashboard-head p,.ege-muted { color:var(--text-muted); }
+.ege-hero-meta { display:flex; flex-wrap:wrap; gap:.6rem; margin:1rem 0 1.25rem; }
+.ege-hero-meta span,.ege-day-state { border:1px solid var(--border-color); background:#fff; border-radius:999px; padding:.35rem .7rem; color:var(--text-secondary); font-size:.8rem; }
+.ege-note,.ege-example { margin-top:1rem; padding:1rem 1.1rem; background:var(--bg-card-subtle); border-radius:var(--radius-md); color:var(--text-secondary); }
+.ege-topline,.ege-lesson-heading,.ege-dashboard-head { display:flex; align-items:center; justify-content:space-between; gap:1rem; flex-wrap:wrap; margin-bottom:.75rem; }
+.ege-progress { height:8px; background:#e2e8f0; border-radius:99px; overflow:hidden; margin:.7rem 0 1.25rem; }
+.ege-progress span { display:block; height:100%; background:var(--primary); border-radius:99px; }
+.ege-question-card h2 { font-size:1.25rem; margin:.35rem 0 1.1rem; line-height:1.45; }
+.ege-options { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.65rem; margin:1rem 0; }
+.ege-option { display:flex; align-items:center; gap:.75rem; min-height:54px; padding:.8rem 1rem; border:1px solid var(--border-color); border-radius:var(--radius-md); background:#fff; color:var(--text-primary); text-align:left; cursor:pointer; font:inherit; transition:var(--transition); }
+.ege-option:hover:not(:disabled) { border-color:var(--primary); background:#f8faff; }
+.ege-option:disabled { cursor:default; opacity:1; }
+.ege-option.is-correct { border-color:#10b981; background:#ecfdf5; }
+.ege-option.is-wrong { border-color:#ef4444; background:#fef2f2; }
+.ege-option-letter { display:grid; place-items:center; width:28px; height:28px; flex:0 0 28px; border-radius:8px; background:var(--bg-card-subtle); font-weight:700; }
+.ege-feedback { margin:1rem 0; padding:1rem; border-radius:var(--radius-md); line-height:1.55; }
+.ege-feedback.success { background:#ecfdf5; border:1px solid #a7f3d0; color:#065f46; }
+.ege-feedback.error { background:#fff7ed; border:1px solid #fed7aa; color:#9a3412; }
+.ege-link-button { margin-top:1rem; border:0; background:transparent; color:var(--text-muted); text-decoration:underline; cursor:pointer; }
+.ege-stats-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:.8rem; margin:1rem 0; }
+.ege-stat-card { background:#fff; border:1px solid var(--border-color); border-radius:var(--radius-md); padding:1rem; display:flex; flex-direction:column; gap:.45rem; }
+.ege-stat-card strong { font-size:1.35rem; }
+.ege-stat-card small { color:var(--text-muted); }
+.ege-columns { display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin-bottom:1rem; }
+.ege-panel h3,.ege-lesson-panel h3 { margin-bottom:.8rem; }
+.ege-weak-list,.ege-week-list { list-style:none; padding:0; }
+.ege-weak-list li,.ege-week-list li { display:flex; justify-content:space-between; gap:1rem; padding:.48rem 0; border-bottom:1px solid #f1f5f9; font-size:.9rem; }
+.ege-weak-list .is-low { color:#dc2626; }
+.ege-lesson-panel { margin-top:1rem; }
+.ege-lesson-panel > p { color:var(--text-secondary); line-height:1.65; }
+.ege-lesson-panel h4 { margin:1.2rem 0 .6rem; }
+.ege-example { line-height:1.6; }
+.ege-footer-note { margin:1rem 0; color:var(--text-muted); font-size:.85rem; }
+.ege-today-card { display:flex; justify-content:space-between; align-items:center; gap:1rem; flex-wrap:wrap; background:#fff; border:1px solid #c7d2fe; border-radius:var(--radius-lg); padding:1.1rem 1.3rem; margin:0 0 1rem; box-shadow:var(--shadow-sm); }
+.ege-today-card h3 { font-size:1.05rem; margin:.15rem 0; }
+.ege-today-card p { font-size:.83rem; color:var(--text-muted); }
+@media (max-width:700px) { .ege-page{padding:1rem 0 1.5rem}.ege-options,.ege-columns,.ege-stats-grid{grid-template-columns:1fr}.ege-hero,.ege-panel,.ege-question-card,.ege-lesson-panel{padding:1.1rem}.ege-today-card{align-items:flex-start}.ege-today-card .btn{width:100%;justify-content:center} }
