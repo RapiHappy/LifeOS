@@ -251,11 +251,10 @@ const EgeTutor = {
   renderTodayCard() {
     const state = this.readState();
     const lesson = this.getLessonForToday();
-    const done = state.daily && state.daily[this.today()] && state.daily[this.today()].done;
-    const diagnosticDone = !!state.diagnostic;
-    const status = done ? "Занятие за сегодня отмечено" : (diagnosticDone ? "Тема выбрана с учётом твоих ответов" : "Сначала проверь знания — затем темы станут персональными");
-    return `<div class="ege-today-card"><div><span class="ege-eyebrow">ЕГЭ • СЕГОДНЯ</span><h3>${diagnosticDone ? this.escape(lesson.title) : "Пройди стартовую диагностику"}</h3><p>${status}</p></div><button class="btn btn-primary" onclick="App.navigateTo('ege')">${diagnosticDone ? (done ? "Открыть тренер" : "Начать занятие") : "Начать тест"}</button></div>`;
-  },
+    const done = !!(state.daily && state.daily[this.today()] && state.daily[this.today()].done);
+    const status = done ? "Тема за сегодня пройдена" : "Сегодняшняя тема уже ждёт тебя";
+    return `<div class="ege-today-card"><div><span class="ege-eyebrow">ЕГЭ • ТЕМА НА СЕГОДНЯ</span><h3>${this.escape(lesson.title)}</h3><p>${status} • ${lesson.time} минут</p></div><button class="btn btn-primary" onclick="App.navigateTo('ege')">${done ? "Повторить тему" : "Открыть тему"}</button></div>`;
+  }
 
   init() { this.render(); },
 
@@ -263,14 +262,16 @@ const EgeTutor = {
     const root = document.getElementById("ege-content");
     if (!root) return;
     const state = this.readState();
-    if (state.session) return this.renderQuestion(root, state);
-    if (!state.diagnostic) return this.renderWelcome(root);
-    return this.renderDashboard(root, state);
-  },
+    if (state.session) {
+      state.session = null;
+      this.writeState(state);
+    }
+    this.renderDashboard(root, state);
+  }
 
   renderWelcome(root) {
-    root.innerHTML = '<div class="ege-page"><div class="ege-hero"><span class="ege-eyebrow">ПЕРСОНАЛЬНАЯ ПОДГОТОВКА</span><h2>Твой тренер ЕГЭ</h2><p>Сначала пройдёшь 20 заданий по математике, информатике и русскому. Это не экзамен на оценку, а карта того, что уже получается и что нужно подтянуть.</p><div class="ege-hero-meta"><span>20 вопросов</span><span>≈ 20–30 минут</span><span>Прогресс сохранится автоматически</span></div><button class="btn btn-primary" onclick="EgeTutor.startDiagnostic()">Начать диагностику</button></div><div class="ege-note"><strong>Что проверим подробнее:</strong> уравнения, степени и логарифмы; геометрию и стереометрию; статистику и вероятность; основы Python и информатики; орфоэпию, грамматику, правописание и пунктуацию.</div></div>';
-  },
+    this.renderDashboard(root, this.readState());
+  }
 
   renderQuestion(root, state) {
     const session = state.session;
@@ -296,32 +297,52 @@ const EgeTutor = {
   },
 
   renderDashboard(root, state) {
-    const diagnostic = state.diagnostic;
     const lesson = this.getLessonForToday();
     const today = this.today();
     const todaysLog = state.daily && state.daily[today];
-    const subjectCards = Object.keys(this.subjectNames).map((subject) => {
-      const stats = diagnostic.subjects[subject] || {total:0,correct:0};
-      const pct = stats.total ? Math.round(stats.correct / stats.total * 100) : 0;
-      return '<div class="ege-stat-card"><span>' + this.subjectNames[subject] + '</span><strong>' + stats.correct + ' / ' + stats.total + '</strong><div class="ege-progress"><span style="width:' + pct + '%"></span></div><small>' + pct + '% верных</small></div>';
-    }).join("");
-    const topics = Object.keys(diagnostic.topics).map(function (tag) {
-      const item = diagnostic.topics[tag];
-      const pct = Math.round(item.correct / item.total * 100);
-      return { label:item.label, pct:pct, subject:item.subject };
-    }).sort(function (a,b) { return a.pct - b.pct; });
-    const weak = topics.slice(0,5).map((item) => '<li><span>' + this.escape(item.label) + '</span><strong class="' + (item.pct < 50 ? "is-low" : "") + '">' + item.pct + '%</strong></li>').join("");
-    const options = lesson.options.map((option, index) => '<button class="ege-option" onclick="EgeTutor.answerLesson(' + index + ')"><span class="ege-option-letter">' + String.fromCharCode(65+index) + '</span><span>' + this.escape(option) + '</span></button>').join("");
     const lessonDone = !!(todaysLog && todaysLog.done);
-    let lessonAction = "";
-    if (todaysLog && todaysLog.answered !== undefined) {
+    const lessonAnswered = todaysLog && todaysLog.answered !== undefined;
+    const options = lesson.options.map((option, index) =>
+      '<button class="ege-option" onclick="EgeTutor.answerLesson(' + index + ')"><span class="ege-option-letter">' +
+      String.fromCharCode(65 + index) + '</span><span>' + this.escape(option) + '</span></button>'
+    ).join("");
+    let lessonAction = '<div class="ege-options">' + options + '</div>';
+    if (lessonAnswered) {
       const correct = todaysLog.answered === lesson.answer;
-      lessonAction = '<div class="ege-feedback ' + (correct ? "success" : "error") + '"><strong>' + (correct ? "Верно" : "Разберём ошибку") + '.</strong> ' + this.escape(lesson.explain) + '</div><button class="btn btn-secondary" onclick="EgeTutor.markLessonDone()">' + (lessonDone ? "Занятие выполнено" : "Отметить занятие выполненным") + '</button>';
-    } else {
-      lessonAction = '<div class="ege-options">' + options + '</div>';
+      lessonAction =
+        '<div class="ege-feedback ' + (correct ? "success" : "error") + '"><strong>' +
+        (correct ? "Верно" : "Разберём ошибку") + '.</strong> ' + this.escape(lesson.explain) +
+        '</div><button class="btn btn-secondary" onclick="EgeTutor.markLessonDone()">' +
+        (lessonDone ? "Тема пройдена" : "Отметить тему изученной") + '</button>';
     }
-    root.innerHTML = '<div class="ege-page"><div class="ege-dashboard-head"><div><span class="ege-eyebrow">ТВОЯ КАРТА ЗНАНИЙ</span><h2>Диагностика завершена</h2><p>Результаты сохранены в этом браузере. Тест можно повторить позже.</p></div><button class="btn btn-secondary" onclick="EgeTutor.startDiagnostic()">Пройти тест заново</button></div><div class="ege-stats-grid">' + subjectCards + '</div><div class="ege-columns"><section class="ege-panel"><h3>Что повторить в первую очередь</h3><ul class="ege-weak-list">' + weak + '</ul><p class="ege-muted">Темы с наименьшей точностью будут чаще попадать в повторение.</p></section><section class="ege-panel"><span class="ege-eyebrow">НЕДЕЛЬНАЯ РОТАЦИЯ</span><h3>План подготовки</h3><ul class="ege-week-list"><li><b>Пн</b> Математика — геометрия</li><li><b>Вт</b> Информатика — Python</li><li><b>Ср</b> Русский — нормы и пунктуация</li><li><b>Чт</b> Математика — статистика и вероятность</li><li><b>Пт</b> Информатика — системы счисления</li><li><b>Сб</b> Математика — геометрия / практика</li><li><b>Вс</b> Повторение самой слабой темы</li></ul></section></div><section class="ege-lesson-panel"><div class="ege-lesson-heading"><div><span class="ege-eyebrow">ТЕМА НА СЕГОДНЯ • ' + lesson.time + ' МИН</span><h3>' + this.escape(lesson.title) + '</h3></div><span class="ege-day-state">' + (lessonDone ? "Выполнено сегодня" : "Занятие не завершено") + '</span></div><p>' + this.escape(lesson.theory) + '</p><div class="ege-example"><strong>Пример:</strong> ' + this.escape(lesson.example) + '</div><h4>' + this.escape(lesson.task) + '</h4>' + lessonAction + '</section><div class="ege-footer-note">Еженедельный план — ориентир примерно на 25–40 минут в день. В дни большой школьной нагрузки можно ограничиться коротким повторением.</div></div>';
-  },
+    const subject = this.subjectNames[lesson.subject] || "ЕГЭ";
+    const weekPlan = [
+      ["Пн", "Математика — геометрия"],
+      ["Вт", "Информатика — Python"],
+      ["Ср", "Русский язык"],
+      ["Чт", "Математика — статистика и вероятность"],
+      ["Пт", "Информатика — системы счисления"],
+      ["Сб", "Математика — геометрия"],
+      ["Вс", "Повторение темы недели"]
+    ].map(function (item) {
+      return '<li><b>' + item[0] + '</b><span>' + item[1] + '</span></li>';
+    }).join("");
+    root.innerHTML =
+      '<div class="ege-page">' +
+        '<div class="ege-dashboard-head"><div><span class="ege-eyebrow">ТВОЯ ПОДГОТОВКА К ЕГЭ</span>' +
+        '<h2>Тема на сегодня</h2><p>Одна тема в день. Прочитай объяснение, разбери пример и реши задание.</p></div></div>' +
+        '<section class="ege-lesson-panel">' +
+          '<div class="ege-lesson-heading"><div><span class="ege-eyebrow">' + this.escape(subject.toUpperCase()) +
+          ' • ' + lesson.time + ' МИНУТ</span><h3>' + this.escape(lesson.title) +
+          '</h3></div><span class="ege-day-state">' + (lessonDone ? "Пройдено" : "На сегодня") + '</span></div>' +
+          '<h4>Что нужно понять</h4><p>' + this.escape(lesson.theory) + '</p>' +
+          '<div class="ege-example"><strong>Пример:</strong> ' + this.escape(lesson.example) + '</div>' +
+          '<h4>Проверь себя</h4><p>' + this.escape(lesson.task) + '</p>' + lessonAction +
+        '</section>' +
+        '<section class="ege-panel ege-week-panel"><h3>Расписание тем на неделю</h3><ul class="ege-week-list">' +
+        weekPlan + '</ul></section>' +
+      '</div>';
+  }
 
   answerLesson(optionIndex) {
     const state = this.readState();
