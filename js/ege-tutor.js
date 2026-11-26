@@ -12,7 +12,7 @@ const EgeTutor = {
   },
 
   // Начало календаря: понедельник, 23 ноября 2026 года.
-  studyStart: "2026-11-23",
+  studyStart: "2026-11-26",
 
   topics: {
     math: [
@@ -151,11 +151,7 @@ const EgeTutor = {
     const date = dateString || this.today();
     const offset = Math.max(0, this.dayOffset(date));
     const weekIndex = Math.floor(offset / 7);
-    const weekday = new Date(Date.UTC(
-      Number(date.slice(0, 4)),
-      Number(date.slice(5, 7)) - 1,
-      Number(date.slice(8, 10))
-    )).getUTCDay();
+    const cycleDay = offset % 7;
 
     const mathIndex = weekIndex % this.topics.math.length;
     const infoIndex = weekIndex % this.topics.informatics.length;
@@ -165,38 +161,42 @@ const EgeTutor = {
     const russianTopic = this.topics.russian[russianIndex];
 
     let plan;
-    if (weekday === 1) {
+    if (cycleDay === 0) {
       plan = { subject:"math", title:mathTopic, phase:"Изучить новую тему",
         instruction:"Найди видеоурок на YouTube, разберись в теории и запиши главные правила, формулы и типовые приёмы." };
-    } else if (weekday === 2) {
+    } else if (cycleDay === 1) {
       plan = { subject:"math", title:mathTopic, phase:"Закрепить вчерашнюю тему",
         instruction:"Реши задания по этой теме самостоятельно. Начни с простых, затем попробуй задания ЕГЭ. Отметь, что пока непонятно." };
-    } else if (weekday === 3) {
+    } else if (cycleDay === 2) {
       plan = { subject:"informatics", title:infoTopic, phase:"Изучить новую тему",
         instruction:"Найди видеоурок, пойми алгоритм или принцип работы и запиши короткий конспект с примерами." };
-    } else if (weekday === 4) {
+    } else if (cycleDay === 3) {
       plan = { subject:"informatics", title:infoTopic, phase:"Закрепить вчерашнюю тему",
-        instruction:"Реши несколько заданий по теме среды. Для программирования обязательно напиши и проверь код самостоятельно." };
-    } else if (weekday === 5) {
+        instruction:"Реши несколько заданий по теме. Для программирования обязательно напиши и проверь код самостоятельно." };
+    } else if (cycleDay === 4) {
       plan = { subject:"russian", title:russianTopic, phase:"Изучить новую тему",
         instruction:"Посмотри объяснение правила, составь короткую памятку и разбери несколько примеров." };
-    } else if (weekday === 6) {
+    } else if (cycleDay === 5) {
       plan = { subject:"russian", title:russianTopic, phase:"Закрепить вчерашнюю тему",
-        instruction:"Выполни задания по теме пятницы. Объясни себе каждую ошибку и повтори правило, если ошибся." };
+        instruction:"Выполни задания по этой теме. Объясни себе каждую ошибку и повтори правило, если ошибся." };
     } else {
       plan = { subject:"math", title:mathTopic, phase:"Повторить математику за неделю",
-        instruction:"Вернись к математической теме понедельника и реши несколько заданий без видео и конспекта. Если отстал — используй этот день как резерв." };
+        instruction:"Вернись к математической теме недели и реши несколько заданий без видео и конспекта. Если отстал — используй этот день как резерв." };
     }
 
+    const parts = date.split("-").map(Number);
+    const weekday = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2])).getUTCDay();
     const dayNames = ["воскресенье","понедельник","вторник","среда","четверг","пятница","суббота"];
     const topicNumber = plan.subject === "math" ? mathIndex + 1 :
       (plan.subject === "informatics" ? infoIndex + 1 : russianIndex + 1);
     const topicCount = plan.subject === "math" ? this.topics.math.length :
       (plan.subject === "informatics" ? this.topics.informatics.length : this.topics.russian.length);
+
     return {
       date:date,
       dayName:dayNames[weekday],
       weekNumber:weekIndex + 1,
+      cycleDay:cycleDay + 1,
       topicNumber:topicNumber,
       topicCount:topicCount,
       subject:plan.subject,
@@ -204,7 +204,7 @@ const EgeTutor = {
       phase:plan.phase,
       instruction:plan.instruction
     };
-  },
+  }
 
   getTomorrowPlan() {
     const p = this.today().split("-").map(Number);
@@ -239,13 +239,13 @@ const EgeTutor = {
     const tomorrow = this.getTomorrowPlan();
 
     const schedule = [
-      ["Понедельник", "Математика — новая тема"],
-      ["Вторник", "Математика — закрепление"],
-      ["Среда", "Информатика — новая тема"],
-      ["Четверг", "Информатика — закрепление"],
-      ["Пятница", "Русский язык — новая тема"],
-      ["Суббота", "Русский язык — закрепление"],
-      ["Воскресенье", "Повторение математики / резерв"]
+      ["День 1", "Математика — новая тема"],
+      ["День 2", "Математика — закрепление"],
+      ["День 3", "Информатика — новая тема"],
+      ["День 4", "Информатика — закрепление"],
+      ["День 5", "Русский язык — новая тема"],
+      ["День 6", "Русский язык — закрепление"],
+      ["День 7", "Повторение математики / резерв"]
     ].map(function (row) {
       return '<li><b>' + row[0] + '</b><span>' + row[1] + '</span></li>';
     }).join("");
@@ -264,7 +264,7 @@ const EgeTutor = {
         '</section>' +
         '<section class="ege-panel ege-week-panel"><h3>Порядок подготовки</h3>' +
           '<ul class="ege-week-list">' + schedule + '</ul>' +
-          '<p class="ege-muted">Темы и порядок прохождения уже встроены в LifeOS. ИИ не выбирает темы случайно: маршрут идёт последовательно, чтобы не пропустить разделы. После завершения списка начнётся следующий проход по темам.</p>' +
+          '<p class="ege-muted">Темы и порядок прохождения уже встроены в LifeOS. Каждые 7 дней начинается следующая тема из каждого предмета; второй день пары всегда отведён на закрепление. После завершения списка начинается повторный проход.</p>' +
         '</section>' +
       '</div>';
   }
