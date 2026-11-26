@@ -20,8 +20,8 @@ const NotificationsManager = {
    */
   getWebPushDisclosure() {
     return {
-      webNotifications: 'Web Notifications API работает прямо в браузере и отображает системные всплывающие окна Windows, пока открыта вкладка LifeOS или браузер работает в фоне/свернут.',
-      webPush: 'Web Push API для доставки уведомлений при ПОЛНОСТЬЮ закрытом браузере требует серверной инфраструктуры (сервер очередей, VAPID-ключи, браузерный Push Service). На статическом хостинге GitHub Pages без отдельного бэкенда Web Push технически невозможен. LifeOS честно использует надёжные локальные уведомления и сохраняет полную историю событий при возвращении во вкладку.'
+      webNotifications: 'Локальные системные уведомления отправляются через Service Worker, пока страница LifeOS открыта и её таймеры выполняются. В фоновой вкладке браузер может замедлять таймеры; после закрытия вкладки проверка расписания прекращается.',
+      webPush: 'Для доставки уведомлений после закрытия вкладки или браузера нужен настоящий Web Push: серверная очередь, VAPID-ключи и Push Service. На одном GitHub Pages без сервера этого нет. Пока вкладка LifeOS открыта, приложение проверяет расписание локально и отправляет системные уведомления через браузер.'
     };
   },
 
@@ -286,93 +286,133 @@ const NotificationsManager = {
   },
 
   /**
-   * Отправка системного уведомления Windows или fallback на in-app toast
+   * Получить активную регистрацию Service Worker для системных уведомлений.
    */
-  showNotification(title, options = {}) {
+  async getServiceWorkerRegistration() {
+    if (typeof navigator === 'undefined' || !navigator.serviceWorker ||
+        typeof navigator.serviceWorker.getRegistration !== 'function') {
+      return null;
+    }
+
+    try {
+      const registration = await navigator.serviceWorker.getRegistration();
+      if (registration && registration.active &&
+          typeof registration.showNotification === 'function') {
+        return registration;
+      }
+    } catch (error) {
+      console.warn('Не удалось получить регистрацию Service Worker:', error);
+    }
+    return null;
+  },
+
+  /**
+   * Системное уведомление: сначала Service Worker, затем Notification() fallback.
+   * Успех пишется в историю только после успешного вызова API.
+   */
+  async showNotification(title, options = {}) {
     const perm = this.getPermissionStatus();
     const settings = this.db ? this.db.getSettings() : {};
-
-    if (settings.notificationSound !== false) {
-      this.playChime();
-    }
-
-    if (perm !== 'granted') {
-      // Fallback на внутристраничный тост
-      this.showInAppToast(title, options.body || '', options.type || 'info');
-      this.addNotificationToHistory({
-        title,
-        body: options.body || '',
-        category: options.category || 'general',
-        status: 'in_app'
-      });
-      return { inApp: true };
-    }
+    const baseUrl = (typeof window !== 'undefined' && window.location && window.location.href)
+      ? window.location.href
+      : 'https://localhost/';
 
     const defaultOptions = {
-      icon: 'assets/icons/icon-192.png',
-      badge: 'assets/icons/favicon.png',
+      icon: new URL('./assets/icons/icon-192.png', baseUrl).href,
+      badge: new URL('./assets/icons/favicon.png', baseUrl).href,
       tag: options.tag || 'lifeos-alert',
       renotify: true,
       silent: false,
       requireInteraction: false
     };
-
     const finalOptions = { ...defaultOptions, ...options };
 
-    try {
-      const notif = new Notification(title, finalOptions);
-
-      notif.onclick = () => {
-        if (typeof window !== 'undefined') window.focus();
-        notif.close();
-      };
-
-      this.addNotificationToHistory({
-        title,
-        body: options.body || '',
-        category: options.category || 'general',
-        status: 'delivered'
-      });
-
-      return notif;
-    } catch (e) {
-      console.warn('Notification constructor error (возможно ServiceWorker context):', e);
-      if (typeof navigator !== 'undefined' && navigator.serviceWorker && navigator.serviceWorker.ready) {
-        navigator.serviceWorker.ready.then(reg => {
-          reg.showNotification(title, finalOptions);
-        });
-      }
+    if (perm !== 'granted') {
       this.showInAppToast(title, options.body || '', options.type || 'info');
       this.addNotificationToHistory({
-        title,
-        body: options.body || '',
-        category: options.category || 'general',
-        status: 'in_app'
+        title, body: options.body || '',
+        category: options.category || 'general', status: 'in_app'
       });
-      return null;
+      return { success: false, inApp: true, reason: 'permission', permission: perm };
     }
+
+    let method = null;
+    let error = null;
+    let notificationInstance = null;
+
+    const registration = await this.getServiceWorkerRegistration();
+    if (registration) {
+      try {
+        await registration.showNotification(title, finalOptions);
+        method = 'service-worker';
+      } catch (err) {
+        error = err;
+        console.warn('Service Worker notification failed; trying Notification() fallback:', err);
+      }
+    }
+
+    if (!method) {
+      try {
+        if (typeof Notification !== 'function') {
+          throw new Error('Notification API недоступен в этом контексте.');
+        }
+        notificationInstance = new Notification(title, finalOptions);
+        notificationInstance.onclick = () => {
+          if (typeof window !== 'undefined' && typeof window.focus === 'function') window.focus();
+          if (notificationInstance && typeof notificationInstance.close === 'function') notificationInstance.close();
+        };
+        method = 'page';
+      } catch (err) {
+        error = err;
+      }
+    }
+
+    if (!method) {
+      console.error('Не удалось отправить системное уведомление:', error);
+      this.showInAppToast(title, options.body || '', options.type || 'info');
+      this.addNotificationToHistory({
+        title, body: options.body || '',
+        category: options.category || 'general', status: 'in_app'
+      });
+      return { success: false, inApp: true, reason: error ? error.message : 'unknown', permission: perm };
+    }
+
+    if (settings.notificationSound !== false) this.playChime();
+    this.addNotificationToHistory({
+      title, body: options.body || '',
+      category: options.category || 'general', status: 'delivered'
+    });
+    return { success: true, method, notification: notificationInstance };
   },
 
   /**
-   * Тестовое системное уведомление
+   * Тестовое системное уведомление. Успех возвращается только после вызова API.
    */
-  sendTestNotification() {
+  async sendTestNotification() {
     const status = this.getPermissionStatus();
     if (status !== 'granted') {
       return {
         success: false,
-        message: 'Сначала разрешите уведомления в браузере!'
+        message: 'Разрешите уведомления для LifeOS в настройках сайта браузера.'
       };
     }
 
-    this.showNotification('LifeOS — Уведомления активны! 🚀', {
-      body: 'Система напоминаний Windows успешно настроена. Вы будете вовремя узнавать о начале уроков, намазе ясту и отдыхе.',
+    const result = await this.showNotification('LifeOS — Уведомления активны! 🚀', {
+      body: 'Тестовое системное уведомление. Если Windows его не показывает, проверьте системные уведомления и режим «Не беспокоить».',
       tag: 'test_notification'
     });
 
+    if (!result.success) {
+      return {
+        success: false,
+        message: 'Браузер не смог создать системное уведомление. Внутреннее уведомление LifeOS показано вместо него. Проверьте разрешения браузера и Windows.'
+      };
+    }
+
     return {
       success: true,
-      message: 'Тестовое уведомление отправлено в правый нижний угол рабочего стола Windows.'
+      method: result.method,
+      message: 'Браузер принял системное уведомление. Если баннер не появился, проверьте разрешения Windows и режим «Не беспокоить».'
     };
   },
 
@@ -420,7 +460,7 @@ const NotificationsManager = {
             body = `Время молитвы: ${task.startTime}. Подготовьтесь к спокойному совершению намаза.`;
           }
 
-          this.showNotification(title, { body, tag: advanceKey });
+          await this.showNotification(title, { body, tag: advanceKey });
         }
 
         // 2. Напоминание ровно в момент начала
@@ -446,7 +486,7 @@ const NotificationsManager = {
             body = 'Отключите экраны, почитайте книгу или проведите время с семьёй.';
           }
 
-          this.showNotification(title, { body, tag: exactKey });
+          await this.showNotification(title, { body, tag: exactKey });
         }
       }
 
@@ -457,7 +497,7 @@ const NotificationsManager = {
 
         if (diffEnd === 5 && !this.sentNotifications.has(endKey)) {
           this.sentNotifications.add(endKey);
-          this.showNotification(`⏰ Завершение: ${task.title}`, {
+          await this.showNotification(`⏰ Завершение: ${task.title}`, {
             body: `До окончания задачи осталось 5 минут. Пора подводить итог и переходить к следующему этапу.`,
             tag: endKey
           });
