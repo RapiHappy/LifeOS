@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lifeos-cache-v1.2.6';
+const CACHE_NAME = 'lifeos-cache-v1.2.7';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -6,6 +6,7 @@ const ASSETS_TO_CACHE = [
   './css/main.css',
   './css/components.css',
   './css/responsive.css',
+  './css/ege-tutor.css',
   './js/time.js',
   './js/database.js',
   './js/prayer.js',
@@ -17,6 +18,7 @@ const ASSETS_TO_CACHE = [
   './js/goals.js',
   './js/statistics.js',
   './js/settings.js',
+  './js/ege-tutor.js',
   './js/app.js',
   './assets/icons/icon.svg',
   './assets/icons/icon-192.png',
