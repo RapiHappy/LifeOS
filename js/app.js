@@ -110,6 +110,8 @@ const App = {
       GoalsManager.init(Database);
     } else if (this.currentView === 'statistics' && typeof StatisticsManager !== 'undefined') {
       StatisticsManager.init(Database);
+    } else if (this.currentView === 'ege' && typeof EgeTutor !== 'undefined') {
+      EgeTutor.init();
     } else if (this.currentView === 'settings' && typeof SettingsManager !== 'undefined') {
       SettingsManager.init(Database);
     }
@@ -294,6 +296,9 @@ const App = {
           <div class="metric-label">Ближайшее событие (напоминание: ${nextReminderTime})</div>
         </div>
       </div>
+
+      <!-- Ежедневная тема ЕГЭ -->
+      ${typeof EgeTutor !== "undefined" ? EgeTutor.renderTodayCard() : ""}
 
       <!-- Таблица / Список расписания на сегодня -->
       <div class="schedule-section-card">
