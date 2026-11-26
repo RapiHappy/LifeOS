@@ -391,19 +391,37 @@ const Scheduler = {
     });
     markOccupied(gameStartMin, gameEndMin, 'gaming');
 
-    // Спорт размещаем после игр, стараясь поставить его после ясту и до семейного времени.
+    // Спорт размещаем в первом безопасном окне: после игр, перед играми
+    // (если ясту мешает), либо после семейного времени.
     const sportEarliestMin = gameEndMin + 10;
-    const sportCandidates = [
-      yastuEndMin + 10,
-      yastuStartMin - sportDuration - 10,
-      sportEarliestMin
+    const sportWindows = [
+      { start: sportEarliestMin, end: familyStartMin, label: 'после игр' },
+      { start: freeTimeStartMin, end: gameStartMin - 10, label: 'перед играми' },
+      { start: familyEndMin + 10, end: restStartMin, label: 'после семейного времени' }
     ];
-    let sportStartMin = sportCandidates.find(candidate =>
-      candidate >= sportEarliestMin &&
-      candidate + sportDuration <= familyStartMin &&
-      !(candidate < yastuEndMin && candidate + sportDuration > yastuStartMin)
-    );
+
+    function findSafeSportStart(window) {
+      if (window.end - window.start < sportDuration) return undefined;
+      const candidates = [
+        window.start,
+        yastuStartMin - sportDuration - 10,
+        yastuEndMin + 10
+      ];
+      return candidates.find(candidate =>
+        candidate >= window.start &&
+        candidate + sportDuration <= window.end &&
+        !(candidate < yastuEndMin && candidate + sportDuration > yastuStartMin)
+      );
+    }
+
+    let sportStartMin;
+    for (const window of sportWindows) {
+      sportStartMin = findSafeSportStart(window);
+      if (sportStartMin !== undefined) break;
+    }
     if (sportStartMin === undefined) {
+      // Защитный fallback: лучше сохранить длительность активности,
+      // чем молча удалить её. Проверка целостности покажет невозможный конфликт.
       sportStartMin = sportEarliestMin;
     }
 
