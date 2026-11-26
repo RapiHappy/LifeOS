@@ -204,13 +204,23 @@ const EgeTutor = {
   },
 
   getTopicAccuracy(tags) {
-    const diagnostic = this.readState().diagnostic;
-    if (!diagnostic || !diagnostic.topics) return null;
-    const stats = tags.map(function (tag) { return diagnostic.topics[tag]; }).filter(Boolean);
-    if (!stats.length) return null;
-    const total = stats.reduce(function (sum, item) { return sum + item.total; }, 0);
-    const correct = stats.reduce(function (sum, item) { return sum + item.correct; }, 0);
-    return Math.round(correct / total * 100);
+    const state = this.readState();
+    const diagnostic = state.diagnostic;
+    let total = 0;
+    let correct = 0;
+    tags.forEach(function (tag) {
+      const initial = diagnostic && diagnostic.topics ? diagnostic.topics[tag] : null;
+      const daily = state.lessonStats ? state.lessonStats[tag] : null;
+      if (initial) {
+        total += Number(initial.total) || 0;
+        correct += Number(initial.correct) || 0;
+      }
+      if (daily) {
+        total += Number(daily.attempts) || 0;
+        correct += Number(daily.correct) || 0;
+      }
+    });
+    return total > 0 ? Math.round(correct / total * 100) : null;
   },
 
   getLessonForToday() {
@@ -274,10 +284,11 @@ const EgeTutor = {
       return '<button class="ege-option' + cls + '" ' + (answered ? "disabled" : "") + ' onclick="EgeTutor.answerDiagnostic(' + i + ')"><span class="ege-option-letter">' + String.fromCharCode(65+i) + '</span><span>' + this.escape(option) + '</span></button>';
     }).join("");
     const feedback = answered ? '<div class="ege-feedback ' + (selected === q.answer ? "success" : "error") + '"><strong>' + (selected === q.answer ? "Верно" : "Пока ошибка") + '.</strong> ' + this.escape(q.explain) + '</div><button class="btn btn-primary" onclick="EgeTutor.nextDiagnostic()">' + (index === this.questions.length - 1 ? "Завершить диагностику" : "Следующий вопрос") + '</button>' : '<p class="ege-muted">Выбери один ответ. После выбора появится объяснение.</p>';
-    root.innerHTML = '<div class="ege-page"><div class="ege-topline"><span>Диагностика знаний</span><strong>' + (index+1) + ' / ' + this.questions.length + '</strong></div><div class="ege-progress"><span style="width:' + progress + '%"></span></div><div class="ege-question-card"><span class="ege-eyebrow">' + this.subjectNames[q.subject] + ' • ' + this.escape(q.topic) + '</span><h2>' + this.escape(q.q) + '</h2><div class="ege-options">' + options + '</div>' + feedback + '</div><button class="ege-link-button" onclick="EgeTutor.exitDiagnostic()">Сохранить и выйти из теста</button></div>';
+    root.innerHTML = '<div class="ege-page"><div class="ege-topline"><span>Диагностика знаний</span><strong>' + (index+1) + ' / ' + this.questions.length + '</strong></div><div class="ege-progress"><span style="width:' + progress + '%"></span></div><div class="ege-question-card"><span class="ege-eyebrow">' + this.subjectNames[q.subject] + ' • ' + this.escape(q.topic) + '</span><h2>' + this.escape(q.q) + '</h2><div class="ege-options">' + options + '</div>' + feedback + '</div><button class="ege-link-button" onclick="EgeTutor.exitDiagnostic()">Прервать тест</button></div>';
   },
 
   exitDiagnostic() {
+    if (!confirm("Прервать тест? Текущая попытка будет сброшена. Чтобы продолжить позже, просто закрой или обнови страницу — ответы сохраняются автоматически.")) return;
     const state = this.readState();
     state.session = null;
     this.writeState(state);
